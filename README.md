@@ -1,4 +1,4 @@
-# 🧠 MicroSholl — Advanced Microglia Morphology Analysis Pipeline
+# 🧠 MicroSholl — Advanced Microglia Morphology Python-based Analysis Pipeline
 
 > **From raw confocal image to publication-ready morphometric data in minutes.**  
 > A Python pipeline for robust, reproducible Sholl analysis of microglial cells, with interactive quality control and batch processing.
