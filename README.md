@@ -229,11 +229,6 @@ For each cell, the following metrics are extracted:
 
 ### (E) Interactive QC Dashboard
 
-> **UI Screenshot Slot — insert `data/qc_dashboard_example.png`**
-
-```
-[ QC Dashboard Screenshot here ]
-```
 <p align="center">
   <img src="data/Screen_QC1.png" width="1100"><br>
 </p>
@@ -258,11 +253,6 @@ Rejected cells are **never silently dropped**: they are flagged and saved separa
 
 ### (F) Batch Processing & Master CSV
 
-> **UI Screenshot Slot — insert `data/batch_dialog.png`**
-
-```
-[ Batch file selection dialog Screenshot here ]
-```
 
 The pipeline accepts **one or more image files** simultaneously:
 
@@ -456,7 +446,7 @@ Images are used exclusively for methodological demonstration and were not modifi
 If you use this pipeline in your research, presentations, or publications, please cite:
 
 ```
-Zammariello, L. (2025). MicroSholl: Advanced Microglia Morphology Analysis Pipeline.
+Zammariello, L. (2026). MicroSholl: Advanced Microglia Morphology Analysis Pipeline.
 GitHub: https://github.com/LorenzoZam/microglia-sholl-pipeline
 ```
 
