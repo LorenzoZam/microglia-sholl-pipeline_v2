@@ -185,14 +185,9 @@ Classical global CLAHE amplifies both signal and background uniformly, corruptin
 
 ### (B) Automated Denoising with Interactive Validation
 
-> **UI Screenshot Slot — insert `data/h_value_UI.png`**
-
-```
-[ Denoising Slider UI Screenshot here ]
-```
 
 <p align="center">
-  <img src="data/h_value_UI.png" width="1100"><br>
+  <img src="data/UIgif.gif" width="1100"><br>
   <em><strong>Denoising UI.</strong> The optimal <code>h</code> value is estimated mathematically (wavelet sigma estimation) and pre-computed for a ±4 range. The slider updates the skeleton preview instantaneously — no computation lag. The user validates the starting estimate or fine-tunes it before analysis begins.</em>
 </p>
 
