@@ -234,6 +234,9 @@ For each cell, the following metrics are extracted:
 ```
 [ QC Dashboard Screenshot here ]
 ```
+<p align="center">
+  <img src="data/Screen_QC1.png" width="1100"><br>
+</p>
 
 Each cell presents a 6-panel dashboard before its data is committed:
 
