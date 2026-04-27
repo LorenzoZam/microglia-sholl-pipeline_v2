@@ -107,10 +107,11 @@ if uploaded_file is not None:
         
         # Draw all historic clicks
         for idx, (cx, cy) in enumerate(st.session_state.soma_points, start=1):
-            cv2.circle(ov_left, (int(cx), int(cy)), 10, (0, 255, 255), -1)
-            cv2.circle(ov_right, (int(cx), int(cy)), 10, (0, 255, 255), -1)
-            cv2.putText(ov_left, str(idx), (int(cx)+15, int(cy)+15), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3)
-            cv2.putText(ov_right, str(idx), (int(cx)+15, int(cy)+15), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3)
+            neon_pink = (255, 20, 147) # Deep Pink for high visibility and contrast
+            cv2.circle(ov_left, (int(cx), int(cy)), 5, neon_pink, -1)
+            cv2.circle(ov_right, (int(cx), int(cy)), 5, neon_pink, -1)
+            cv2.putText(ov_left, str(idx), (int(cx)+10, int(cy)+10), cv2.FONT_HERSHEY_DUPLEX, 1.0, neon_pink, 2)
+            cv2.putText(ov_right, str(idx), (int(cx)+10, int(cy)+10), cv2.FONT_HERSHEY_DUPLEX, 1.0, neon_pink, 2)
 
         # Scale display images to avoid scrollbars without using CSS overrides that break coordinate mapping
         DISPLAY_WIDTH = 700
@@ -306,4 +307,12 @@ if uploaded_file is not None:
             
             pcol2.pyplot(fig_global)
             
-        st.balloons()
+            # Premium Feature: Allow users to download the computed dataset
+            csv = df_sholl.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Sholl Data as CSV",
+                data=csv,
+                file_name='sholl_analysis_results.csv',
+                mime='text/csv',
+                help="Download the exact intersection metrics mapped to the chart!"
+            )
