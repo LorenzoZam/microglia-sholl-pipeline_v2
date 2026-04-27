@@ -10,10 +10,7 @@ from skimage.filters.rank import entropy
 from skimage.morphology import disk
 from skimage.restoration import estimate_sigma
 import concurrent.futures
-import tkinter as tk
-from tkinter import filedialog
 from matplotlib.widgets import Slider, Button
-
 # Multi-dimensional morphometric feature extraction
 from morphology_features import (
     box_counting_fractal_dimension,
@@ -686,6 +683,9 @@ def select_image_file():
     Returns:
     - tuple: Selected file paths.
     """
+    import tkinter as tk
+    from tkinter import filedialog
+    
     root = tk.Tk()
     root.withdraw()  # Hide the main window
     file_paths = filedialog.askopenfilenames(
