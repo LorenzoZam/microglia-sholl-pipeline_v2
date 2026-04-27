@@ -521,6 +521,10 @@ def preprocess_image(image):  # Optional step for preprocessing pipeline visuali
     plt.axis('off')
 
     plt.tight_layout()
+    try:
+        plt.get_current_fig_manager().window.state('zoomed')
+    except Exception:
+        pass
     plt.show()
 
     return skeleton, processed_image, den_th_image, binary
@@ -757,23 +761,86 @@ def main():
         bridge_refined = bridge_nearby_fragments_refine(refined)
         skeleton = remove_isolated_fibers(bridge_refined)
 
-        # Show processed image (for soma selection) and skeleton (for reference) side by side
+        # Show processed image and skeleton side by side for selection
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 7))
+        fig.canvas.manager.set_window_title(f"Soma Selection - {filename_prefix}")
+        
         ax1.imshow(processed_image, cmap='gray')
-        ax1.set_title(f"Image: {filename_prefix} (Select Somas Here)")
+        ax1.set_title("Processed Image")
         ax1.axis('off')
+        
         ax2.imshow(skeleton, cmap='gray')
-        ax2.set_title("Final Skeleton (Reference Only)")
+        ax2.set_title("Skeletonized Image")
         ax2.axis('off')
+
         plt.tight_layout()
         plt.subplots_adjust(bottom=0.15, top=0.921)
-        plt.suptitle("Left: Click to select soma points, then close the window.\nRight: Final skeleton for reference.", fontsize=12)
-        plt.show(block=False)
+        plt.suptitle("Click on EITHER image to select soma locations.", fontsize=13, fontweight='bold')
+        
+        soma_points_raw = []
+        ui_elements = {'markers': [], 'texts': []}
 
-        # Interactive soma selection on processed image
-        plt.figure(fig.number)  # Bring the figure to the front
-        soma_points = plt.ginput(n=0, timeout=0)
-        plt.close(fig)
+        def update_markers():
+            # Remove old markers and text
+            for m in ui_elements['markers'] + ui_elements['texts']:
+                m.remove()
+            ui_elements['markers'].clear()
+            ui_elements['texts'].clear()
+
+            # Draw new ones on both axes
+            for idx, (x, y) in enumerate(soma_points_raw, start=1):
+                for ax in (ax1, ax2):
+                    m = ax.scatter(x, y, color='cyan', s=40, edgecolors='black', zorder=5)
+                    t = ax.text(x + 5, y + 5, str(idx), color='cyan', fontsize=12, fontweight='bold', zorder=5)
+                    ui_elements['markers'].append(m)
+                    ui_elements['texts'].append(t)
+
+            fig.canvas.draw_idle()
+
+        def onclick(event):
+            # Ensure click is inside one of the two image axes
+            if event.inaxes in (ax1, ax2):
+                soma_points_raw.append((event.xdata, event.ydata))
+                update_markers()
+
+        cid = fig.canvas.mpl_connect('button_press_event', onclick)
+
+        # UI Buttons at the bottom
+        ax_undo = plt.axes([0.3, 0.02, 0.1, 0.05])
+        btn_undo = Button(ax_undo, 'Undo Last', color='lightcoral', hovercolor='salmon')
+
+        ax_clear = plt.axes([0.45, 0.02, 0.1, 0.05])
+        btn_clear = Button(ax_clear, 'Clear All', color='khaki', hovercolor='gold')
+
+        ax_acc = plt.axes([0.6, 0.02, 0.15, 0.05])
+        btn_acc = Button(ax_acc, 'Accept & Continue', color='lightgreen', hovercolor='palegreen')
+
+        def on_undo(event):
+            if soma_points_raw:
+                soma_points_raw.pop()
+                update_markers()
+        btn_undo.on_clicked(on_undo)
+
+        def on_clear(event):
+            soma_points_raw.clear()
+            update_markers()
+        btn_clear.on_clicked(on_clear)
+
+        def on_accept(event):
+            plt.close(fig)
+        btn_acc.on_clicked(on_accept)
+
+        try:
+            plt.get_current_fig_manager().window.state('zoomed')
+        except Exception:
+            pass
+        
+        # Block script until window is closed (Accept & Continue pressed or manual close)
+        plt.show(block=True)
+        
+        # Cleanup
+        fig.canvas.mpl_disconnect(cid)
+        soma_points = soma_points_raw
 
         if not soma_points:
             print(f"  > No somas selected for {filename_prefix}. Skipping Image...")
@@ -930,7 +997,7 @@ def main():
                     f"{filename_prefix}_REJECTED_backtrace_soma_{i}.png"
                 )
                 if os.path.exists(backtrace_path):
-                    os.rename(backtrace_path, rejected_path)
+                    os.replace(backtrace_path, rejected_path)
                 print(f"  >> Soma {i} REJECTED (excluded from CSV)")
                 continue  # skip adding to CSV
 
@@ -1108,6 +1175,10 @@ def preview_denoising(image):
     fig.text(0.02, 0.04, "Instructions: Move the slider to instantly swap pre-computed noise reductions.\nClick 'Accept & Continue' when the skeleton looks clean and continuous.", fontsize=10, fontstyle='italic')
     
     # Block script execution until window is explicitly closed
+    try:
+        plt.get_current_fig_manager().window.state('zoomed')
+    except Exception:
+        pass
     plt.show(block=True)
     
     print(f"User validated h={current_h[0]}. Proceeding with analysis...")

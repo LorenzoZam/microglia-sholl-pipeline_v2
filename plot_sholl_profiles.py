@@ -13,11 +13,15 @@ Dependencies: pandas, matplotlib, numpy, scipy, statsmodels, patsy
 
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 import numpy as np
 import os
 import tkinter as tk
 from tkinter import filedialog
 import scipy.integrate
+
+# Apply Seaborn theme globally for scientific aesthetics
+sns.set_theme(style="ticks", context="talk", palette="colorblind")
 
 # ─── Configuration ──────────────────────────────────────────────────────────
 conversion_factor = 0.56  # 1 pixel = 0.56 µm
@@ -74,20 +78,21 @@ def plot_comparison_curve_simple(file_paths, labels, colors):
         n = df["Soma_ID"].nunique()
         label_with_n = f"{lbl} (n={n})"
 
-        plt.plot(radii, mean, marker='o', linestyle='-',
+        plt.plot(radii, mean, marker='o', markersize=5, linestyle='-', linewidth=2.5,
                  label=label_with_n, color=color)
         plt.fill_between(radii, mean - sem, mean + sem,
-                         color=color, alpha=0.2)
+                         color=color, alpha=0.25, linewidth=0)
 
-    plt.xlabel("Radius (µm)")
-    plt.ylabel("Number of Intersections")
-    plt.title("Sholl Analysis — Mean ± SEM")
-    plt.legend(frameon=False)
-    plt.grid(False)
-    ax = plt.gca()
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+    plt.xlabel("Distance from Soma (µm)", fontweight='bold')
+    plt.ylabel("Number of Intersections", fontweight='bold')
+    plt.title("Sholl Curve (Mean ± SEM)", fontweight='bold', pad=15)
+    plt.legend(frameon=False, fontsize=10)
+    sns.despine()
     plt.tight_layout()
+    try:
+        plt.get_current_fig_manager().window.state('zoomed')
+    except Exception:
+        pass
     plt.show()
 
 
@@ -226,25 +231,27 @@ def plot_mixed_effects_curves(df, result, colors=None):
         n_animals = grp_data["Animal_ID"].nunique()
 
         # Plot predicted curve
-        ax.plot(r_grid, pred, color=color, linewidth=2,
-                label=f"{grp} (n_cells={n_cells}, n_animals={n_animals})")
+        ax.plot(r_grid, pred, color=color, linewidth=3,
+                label=f"{grp} (cells={n_cells}, animals={n_animals})")
 
         # Scatter raw means
         ax.scatter(raw_stats["Radius_um"], raw_stats["mean"],
-                   color=color, s=20, alpha=0.5, zorder=3)
+                   color=color, s=30, alpha=0.6, zorder=3, edgecolor='white', linewidth=0.5)
         ax.fill_between(raw_stats["Radius_um"],
                         raw_stats["mean"] - raw_stats["sem"],
                         raw_stats["mean"] + raw_stats["sem"],
-                        color=color, alpha=0.12)
+                        color=color, alpha=0.15, linewidth=0)
 
-    ax.set_xlabel("Radius (µm)", fontsize=12)
-    ax.set_ylabel("Intersections", fontsize=12)
-    ax.set_title("Sholl Analysis — Mixed-Effects Model with Cubic Spline",
-                 fontsize=13)
+    ax.set_xlabel("Distance from Soma (µm)", fontweight='bold')
+    ax.set_ylabel("Number of Intersections", fontweight='bold')
+    ax.set_title("Mixed-Effects Sholl Model Analysis", fontweight='bold', pad=15)
     ax.legend(frameon=False, fontsize=10)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+    sns.despine()
     fig.tight_layout()
+    try:
+        plt.get_current_fig_manager().window.state('zoomed')
+    except Exception:
+        pass
     plt.show()
 
 
@@ -270,68 +277,73 @@ def plot_max_radius_per_cell(file_path, label=""):
     std_r = np.std(max_radii_um, ddof=1)
 
     plt.figure(figsize=(10, 6))
-    plt.bar(range(1, len(max_radii_um) + 1), max_radii_um,
-            color='orangered', edgecolor='black', alpha=0.7)
-    stat_text = f"Mean ± SD = {mean_r:.2f} ± {std_r:.2f} µm"
+    
+    # Use stem/lollipop plot instead of heavy bars
+    x_pos = range(1, len(max_radii_um) + 1)
+    plt.vlines(x=x_pos, ymin=0, ymax=max_radii_um, color='teal', alpha=0.6, linewidth=2)
+    plt.scatter(x_pos, max_radii_um, color='darkcyan', s=40, zorder=3)
+
+    stat_text = f"Mean ± SD: {mean_r:.1f} ± {std_r:.1f} µm"
     plt.text(0.05, 0.95, stat_text, transform=plt.gca().transAxes,
              fontsize=12, verticalalignment='top',
-             bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
+             bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', boxstyle='round,pad=0.5'))
 
-    plt.xlabel("Cells (sorted by max radius)")
-    plt.ylabel("Max Radius (µm)")
-    plt.title(f"Max Radius per Cell — {label}")
-    plt.xticks(range(1, len(max_radii_um) + 1))
-    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.xlabel("Cells (Sorted Distribution)", fontweight='bold')
+    plt.ylabel("Max Radius (µm)", fontweight='bold')
+    plt.title(f"Cellular Max Radius Distribution — {label}", fontweight='bold', pad=15)
+    plt.xticks([]) # Hide individual sequential integers for clean look
+    sns.despine(bottom=True)
+    
     plt.tight_layout()
+    try:
+        plt.get_current_fig_manager().window.state('zoomed')
+    except Exception:
+        pass
     plt.show()
 
 
-def plot_grouped_max_radius_barplot(file_paths, labels, colors,
-                                    cf=0.56):
-    means, stds, ns = [], [], []
-
-    for file in file_paths:
-        df = load_dataframe(file)
+def plot_grouped_max_radius_barplot(file_paths, labels, colors):
+    all_cells_radius = []
+    
+    for fp, lbl in zip(file_paths, labels):
+        df = load_dataframe(fp)
         df = df[df["Intersections"] >= 0]
-
-        max_radii = []
-        for _, group in df.groupby("Soma_ID"):
+        
+        for soma_id, group in df.groupby("Soma_ID"):
             last_nz = group[group["Intersections"] > 0]["Radius"].max()
-            max_radii.append(
-                last_nz if pd.notna(last_nz) else group["Radius"].max()
-            )
-
-        max_radii_um = [r * cf for r in max_radii]
-        means.append(np.mean(max_radii_um))
-        stds.append(np.std(max_radii_um, ddof=1))
-        ns.append(len(max_radii_um))
-
-    width = 0.3
-    x = np.arange(len(means))
+            max_r = last_nz if pd.notna(last_nz) else group["Radius"].max()
+            all_cells_radius.append({"Group": lbl, "Max_Radius_um": max_r * conversion_factor})
+            
+    plot_df = pd.DataFrame(all_cells_radius)
+    
     fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Beautiful seaborn violin + swarm visualization
+    sns.violinplot(
+        data=plot_df, x="Group", y="Max_Radius_um", 
+        ax=ax, color='white', inner=None, linewidth=1.5
+    )
+    sns.stripplot(
+        data=plot_df, x="Group", y="Max_Radius_um", 
+        ax=ax, hue="Group", palette=colors[:len(plot_df["Group"].unique())], size=6, alpha=0.7, jitter=True, zorder=1, legend=False
+    )
+    
+    # Overlay robust mean + error representation
+    sns.pointplot(
+        data=plot_df, x="Group", y="Max_Radius_um", 
+        ax=ax, color='black', errorbar='sd', linestyle='none', 
+        capsize=0.1, markers="D", markersize=8, zorder=3
+    )
 
-    bars = ax.bar(x, means, yerr=stds, capsize=8, width=width,
-                  color=colors, alpha=0.8, edgecolor='black')
-
-    for i, bar in enumerate(bars):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width() / 2,
-                height + stds[i] + 1,
-                f"{means[i]:.1f} µm", ha='center', va='bottom',
-                fontsize=10)
-
-    for i in range(len(labels)):
-        ax.bar(0, 0, color=colors[i], label=f"{labels[i]} (n={ns[i]})")
-
-    ax.legend(loc='upper right', fontsize=11, frameon=False)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=11)
-    ax.set_ylabel("Max Radius (µm)", fontsize=12)
-    ax.set_title("Mean Max Radius per Group", fontsize=12)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.set_ylim(0, max(m + s for m, s in zip(means, stds)) * 1.35)
+    ax.set_ylabel("Max Radius (µm)", fontweight='bold')
+    ax.set_xlabel("")
+    ax.set_title("Distribution of Cell Sizes per Group", fontweight='bold', pad=15)
+    sns.despine(trim=True)
     fig.tight_layout()
+    try:
+        plt.get_current_fig_manager().window.state('zoomed')
+    except Exception:
+        pass
     plt.show()
 
 
@@ -371,33 +383,52 @@ def plot_morphometric_summary(file_paths, labels, colors):
     combined = pd.concat(all_data, ignore_index=True)
     present_cols = [c for c in morph_cols if c in combined.columns]
 
-    n_metrics = len(present_cols)
-    fig, axes = plt.subplots(1, n_metrics, figsize=(4 * n_metrics, 5))
-    if n_metrics == 1:
-        axes = [axes]
-
     groups = combined["Group"].unique()
-    x = np.arange(len(groups))
-    width = 0.5
+    color_dict = dict(zip(groups, colors))
 
-    for ax, col in zip(axes, present_cols):
-        means_g, stds_g = [], []
-        for grp in groups:
-            vals = combined.loc[combined["Group"] == grp, col].dropna()
-            means_g.append(vals.mean())
-            stds_g.append(vals.std())
+    chunk_size = 4
+    chunks = [present_cols[i:i + chunk_size] for i in range(0, len(present_cols), chunk_size)]
+    
+    for chunk_idx, cols_chunk in enumerate(chunks, 1):
+        n_metrics = len(cols_chunk)
+        # Provide plenty of horizontal space per subplot
+        fig, axes = plt.subplots(1, n_metrics, figsize=(4 * n_metrics + 2, 6))
+        if n_metrics == 1:
+            axes = [axes]
+        
+        fig.canvas.manager.set_window_title(f"Morphometrics - Part {chunk_idx}")
 
-        color_list = colors[:len(groups)]
-        ax.bar(x, means_g, yerr=stds_g, capsize=5, width=width,
-               color=color_list, alpha=0.8, edgecolor='black')
-        ax.set_xticks(x)
-        ax.set_xticklabels(groups, fontsize=9, rotation=30, ha='right')
-        ax.set_title(col.replace('_', ' '), fontsize=10)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
+        for ax, col in zip(axes, cols_chunk):
+            sns.boxplot(
+                data=combined, x="Group", y=col,
+                ax=ax, color="white", showfliers=False, width=0.5, linewidth=1.5
+            )
+            # Increased point size (size=7) and opacity (alpha=0.9) to make single cells pop out
+            sns.stripplot(
+                data=combined, x="Group", y=col,
+                ax=ax, hue="Group", palette=color_dict, size=7, alpha=0.9, jitter=0.2, zorder=1, legend=False
+            )
+            
+            ax.set_xlabel("")
+            ax.set_ylabel("")
+            clean_name = col.replace('_', ' ')
+            ax.set_title(clean_name, fontweight='bold', fontsize=13, pad=12)
+            
+            ax.set_xticks(ax.get_xticks())
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha='right', fontsize=11)
 
-    fig.suptitle("Morphometric Summary per Group", fontsize=13, y=1.02)
-    fig.tight_layout()
+        sns.despine()
+        fig.suptitle(f"Morphometric Distributions per Group (Part {chunk_idx}/{len(chunks)})", fontsize=16, fontweight='bold', y=1.05)
+        # Added w_pad for extra horizontal breathing room between plots
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95], w_pad=2.0)
+        
+        try:
+            fig_manager = plt.get_current_fig_manager()
+            fig_manager.window.state('zoomed')
+        except Exception:
+            pass
+
+    # Call show once at the end so all windows pop up together
     plt.show()
 
 
@@ -474,6 +505,17 @@ if __name__ == "__main__":
     if not file_paths:
         print("No files selected. Exiting.")
         exit()
+
+    # Prompt for custom conversion factor
+    user_cf = input(f"\nEnter pixel-to-µm conversion factor (default {conversion_factor}): ").strip()
+    if user_cf:
+        try:
+            conversion_factor = float(user_cf)
+            print(f"  > Using custom conversion factor: {conversion_factor} µm/px")
+        except ValueError:
+            print(f"  > Invalid input. Falling back to default: {conversion_factor} µm/px")
+    else:
+        print(f"  > Using default conversion factor: {conversion_factor} µm/px")
 
     colors = get_default_colors(len(file_paths))
 
