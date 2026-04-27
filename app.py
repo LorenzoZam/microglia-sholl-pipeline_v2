@@ -45,6 +45,8 @@ if "last_click1" not in st.session_state:
     st.session_state.last_click1 = None
 if "last_click2" not in st.session_state:
     st.session_state.last_click2 = None
+if "rejected_cells" not in st.session_state:
+    st.session_state.rejected_cells = set()
 
 
 def undo_last():
@@ -63,6 +65,7 @@ def accept_all():
 def restart():
     st.session_state.soma_points = []
     st.session_state.ui_mode = "selecting"
+    st.session_state.rejected_cells = set()
 
 
 # -------------------------------------------------------------
@@ -365,13 +368,27 @@ if uploaded_file is not None:
 
             plt.close("all")
 
-            # Accumulate for global report
-            for r, inters in zip(radii, intersections):
-                all_cells_sholl_data.append({
-                    "Radius (px)":  r,
-                    "Intersections": inters,
-                    "Cell": f"Cell {idx}",
-                })
+            # ── Accept / Reject toggle for this cell ──────────────────────────
+            accepted = st.checkbox(
+                f"✅  Include Cell {idx} in Global Report",
+                value=(idx not in st.session_state.rejected_cells),
+                key=f"accept_cell_{idx}",
+            )
+            if accepted:
+                st.session_state.rejected_cells.discard(idx)
+            else:
+                st.session_state.rejected_cells.add(idx)
+
+            # Accumulate for global report (only if accepted)
+            if accepted:
+                for r, inters in zip(radii, intersections):
+                    all_cells_sholl_data.append({
+                        "Radius (px)":   r,
+                        "Intersections": inters,
+                        "Cell": f"Cell {idx}",
+                    })
+            else:
+                st.caption(f"⚠️ Cell {idx} excluded from Global Report.")
 
         # ── Global Pipeline Report ────────────────────────────────────────────
         if all_cells_sholl_data:
@@ -416,9 +433,9 @@ if uploaded_file is not None:
                 mean_color = palette_colors[0]
                 sns.lineplot(
                     data=df_sholl, x="Radius (µm)", y="Intersections",
-                    color=mean_color, linewidth=2.5, errorbar=("ci", 95),
+                    color=mean_color, linewidth=2.5, errorbar="se",
                     err_kws={"alpha": 0.25}, ax=ax_glob,
-                    label=f"Mean ± 95% CI  (n={n_cells})",
+                    label=f"Mean ± SEM  (n={n_cells})",
                 )
 
             ax_glob.set_xlabel("Distance from Soma (µm)", fontweight="bold", fontsize=12)
