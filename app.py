@@ -112,21 +112,33 @@ if uploaded_file is not None:
             cv2.putText(ov_left, str(idx), (int(cx)+15, int(cy)+15), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3)
             cv2.putText(ov_right, str(idx), (int(cx)+15, int(cy)+15), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3)
 
+        # Scale display images to avoid scrollbars without using CSS overrides that break coordinate mapping
+        DISPLAY_WIDTH = 700
+        scale_ratio = min(1.0, DISPLAY_WIDTH / float(ov_left.shape[1])) # Scale down only if larger than 700px
+        new_dim = (int(ov_left.shape[1] * scale_ratio), int(ov_left.shape[0] * scale_ratio))
+        
+        ov_left_small = cv2.resize(ov_left, new_dim, interpolation=cv2.INTER_AREA)
+        ov_right_small = cv2.resize(ov_right, new_dim, interpolation=cv2.INTER_AREA)
+
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Processed Image**")
-            val1 = streamlit_image_coordinates(ov_left, key="img1", use_column_width=True)
+            val1 = streamlit_image_coordinates(ov_left_small, key="img1")
         with col2:
             st.markdown("**Skeletonized Tracing**")
-            val2 = streamlit_image_coordinates(ov_right, key="img2", use_column_width=True)
+            val2 = streamlit_image_coordinates(ov_right_small, key="img2")
             
         # Detect new clicks
         if val1 is not None and val1 != st.session_state.last_click1:
-            st.session_state.soma_points.append((val1['x'], val1['y']))
+            real_x = val1['x'] / scale_ratio
+            real_y = val1['y'] / scale_ratio
+            st.session_state.soma_points.append((real_x, real_y))
             st.session_state.last_click1 = val1
             st.rerun()
         if val2 is not None and val2 != st.session_state.last_click2:
-            st.session_state.soma_points.append((val2['x'], val2['y']))
+            real_x = val2['x'] / scale_ratio
+            real_y = val2['y'] / scale_ratio
+            st.session_state.soma_points.append((real_x, real_y))
             st.session_state.last_click2 = val2
             st.rerun()
             
