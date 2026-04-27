@@ -115,10 +115,10 @@ if uploaded_file is not None:
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Processed Image**")
-            val1 = streamlit_image_coordinates(ov_left, key="img1")
+            val1 = streamlit_image_coordinates(ov_left, key="img1", use_column_width=True)
         with col2:
             st.markdown("**Skeletonized Tracing**")
-            val2 = streamlit_image_coordinates(ov_right, key="img2")
+            val2 = streamlit_image_coordinates(ov_right, key="img2", use_column_width=True)
             
         # Detect new clicks
         if val1 is not None and val1 != st.session_state.last_click1:
@@ -144,6 +144,7 @@ if uploaded_file is not None:
             st.warning("No cells selected.")
             
         farthest_endpoints = measure_farthest_neurite(skeleton, st.session_state.soma_points)
+        all_cells_sholl_data = []  # Accumulate ALL intersection data for the final plot
         
         for idx, (raw_x, raw_y) in enumerate(st.session_state.soma_points, start=1):
             st.divider()
@@ -256,6 +257,41 @@ if uploaded_file is not None:
             sns.despine()
             db_col3.pyplot(fig_curve)
             
+            # Update accumulator for final plot
+            import pandas as pd
+            for r, inters in zip(radii, intersections):
+                all_cells_sholl_data.append({
+                    "Radius (um)": r * 0.56, # Assuming hardcoded typical conversion factor mentioned before
+                    "Radius (px)": r,
+                    "Intersections": inters,
+                    "Cell": f"Cell {idx}"
+                })
+            
             plt.close('all')
+            
+        if all_cells_sholl_data:
+            st.divider()
+            st.markdown("### 📈 Global Pipeline Report")
+            df_sholl = pd.DataFrame(all_cells_sholl_data)
+            
+            pcol1, pcol2 = st.columns([1, 3])
+            palette_opt = pcol1.selectbox("🎨 Select Palette (App Only Feature)", ["viridis", "husl", "magma", "Set2", "colorblind", "flare", "mako"])
+            conv_factor = pcol1.number_input("Conversion Factor (um/px)", min_value=0.1, max_value=5.0, value=0.56, step=0.01)
+            
+            df_sholl["Radius"] = df_sholl["Radius (px)"] * conv_factor
+            
+            fig_global, ax_glob = plt.subplots(figsize=(10, 6))
+            
+            # Plot individual cell traces
+            sns.lineplot(data=df_sholl, x='Radius', y='Intersections', hue='Cell', alpha=0.4, linewidth=1.5, palette=palette_opt, ax=ax_glob)
+            # Overlay aggregated mean curve (like the original script)
+            sns.lineplot(data=df_sholl, x='Radius', y='Intersections', color='black', linewidth=3, errorbar=None, label="Mean Trend", ax=ax_glob)
+            
+            ax_glob.set_xlabel("Distance from Soma (µm)", fontweight='bold', fontsize=12)
+            ax_glob.set_ylabel("Number of Intersections", fontweight='bold', fontsize=12)
+            ax_glob.set_title("Aggregated Sholl Morphometric Analysis", fontweight='bold', fontsize=14)
+            sns.despine()
+            
+            pcol2.pyplot(fig_global)
             
         st.balloons()
