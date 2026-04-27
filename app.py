@@ -23,10 +23,38 @@ from morphology_features import (
 st.set_page_config(page_title="🔬 Sholl Analysis WebDemo", layout="wide", page_icon="🧠")
 sns.set_theme(style="ticks", context="talk", palette="colorblind")
 
-# Configure a large width so clicks map accurately
 st.title("🔬 Automated Sholl Analysis Pipeline (Demo)")
 st.markdown("This web app perfectly replicates the rigorous mathematical pipeline used in the native desktop script. Upload a single-cell image to trace its skeleton and extract morphometrics using Voronoi isolation.")
 
+# -------------------------------------------------------------
+# SESSION STATE INITIALIZATION
+# -------------------------------------------------------------
+if 'soma_points' not in st.session_state:
+    st.session_state.soma_points = []
+if 'ui_mode' not in st.session_state:
+    st.session_state.ui_mode = 'selecting'
+if 'last_click1' not in st.session_state:
+    st.session_state.last_click1 = None
+if 'last_click2' not in st.session_state:
+    st.session_state.last_click2 = None
+
+def undo_last():
+    if st.session_state.soma_points:
+        st.session_state.soma_points.pop()
+
+def clear_all():
+    st.session_state.soma_points = []
+    
+def accept_all():
+    st.session_state.ui_mode = 'qc'
+    
+def restart():
+    st.session_state.soma_points = []
+    st.session_state.ui_mode = 'selecting'
+
+# -------------------------------------------------------------
+# CORE ALGORITHM
+# -------------------------------------------------------------
 @st.cache_data
 def run_scientific_skeletonization(image, h_val):
     # Strictly matched from main() in run_sholl_pipeline.py
@@ -47,8 +75,11 @@ def run_scientific_skeletonization(image, h_val):
     bridge_refined = bridge_nearby_fragments_refine(refined)
     skeleton = remove_isolated_fibers(bridge_refined)
     
-    return binary, skeleton
+    return processed_image, binary, skeleton
 
+# -------------------------------------------------------------
+# MAIN APP BODY
+# -------------------------------------------------------------
 uploaded_file = st.file_uploader("Upload Image (TIFF/PNG/JPG)", type=["tif", "tiff", "png", "jpg", "jpeg"])
 
 if uploaded_file is not None:
@@ -59,77 +90,108 @@ if uploaded_file is not None:
          st.stop()
 
     st.sidebar.header("Denoising Calibration")
-    h_val = st.sidebar.slider("NLM Denoising Parameter (h)", min_value=1, max_value=30, value=11)
-    step_size = st.sidebar.number_input("Sholl Step Size (pixels)", min_value=1, max_value=50, value=10)
+    h_val = st.sidebar.slider("NLM Parameter (h)", min_value=1, max_value=30, value=11, disabled=(st.session_state.ui_mode == 'qc'))
+    step_size = st.sidebar.number_input("Sholl Step Size (px)", min_value=1, max_value=50, value=10)
 
-    # 1. Processing
-    with st.spinner("Applying adaptive morphological filters..."):
-        binary, skeleton = run_scientific_skeletonization(img_gray, h_val)
+    with st.spinner("Applying rigorous morphological filters..."):
+        processed_image, binary, skeleton = run_scientific_skeletonization(img_gray, h_val)
 
-    st.markdown("### 1) Interactive Denoising Preview")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.image(img_gray, caption="Raw Image")
-    with col2:
-        overlay = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2RGB)
-        overlay[skeleton > 0] = [255, 0, 0]
-        st.image(overlay, caption=f"Skeletonized Tracing (h={h_val})")
-
-    st.markdown("### 2) Soma Selection & Voronoi Isolation")
-    st.info("Click directly on the 'Soma' (cell body) in the image below to isolate its specific connected component!")
-
-    # Soma clicking interactive point
-    click_data = streamlit_image_coordinates(overlay, key="soma_clicker")
-
-    if click_data is not None:
-        cx, cy = click_data["x"], click_data["y"]
+    if st.session_state.ui_mode == 'selecting':
+        st.markdown("### Step 2: Interactive Cell Detection")
+        st.info("Click directly on ANY of the two images below to register a Soma coordinate. You can accumulate multiple cells exactly like in Matplotlib!")
         
-        # We must isolate the exact cell using their algorithm
-        with st.spinner("Isolating cell connected component..."):
-            component_mask, (corr_y, corr_x) = get_connected_component(skeleton, (cy, cx))
+        # Prepare Interactive Overlays
+        ov_left = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
+        ov_right = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
+        ov_right[skeleton > 0] = [255, 0, 0] # Skeleton overlay
         
-        if component_mask is None:
-            st.error("No valid neuronal/microglial skeleton found at that coordinate. Please click directly on a red path.")
-        else:
-            st.success(f"Cell Isolated Successfully! Exact Centroid Snapped to: (X:{corr_x}, Y:{corr_y})")
+        # Draw all historic clicks
+        for idx, (cx, cy) in enumerate(st.session_state.soma_points, start=1):
+            cv2.circle(ov_left, (int(cx), int(cy)), 10, (0, 255, 255), -1)
+            cv2.circle(ov_right, (int(cx), int(cy)), 10, (0, 255, 255), -1)
+            cv2.putText(ov_left, str(idx), (int(cx)+15, int(cy)+15), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3)
+            cv2.putText(ov_right, str(idx), (int(cx)+15, int(cy)+15), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("**Processed Image**")
+            val1 = streamlit_image_coordinates(ov_left, key="img1")
+        with col2:
+            st.markdown("**Skeletonized Tracing**")
+            val2 = streamlit_image_coordinates(ov_right, key="img2")
             
-            # Sholl Math
+        # Detect new clicks
+        if val1 is not None and val1 != st.session_state.last_click1:
+            st.session_state.soma_points.append((val1['x'], val1['y']))
+            st.session_state.last_click1 = val1
+            st.rerun()
+        if val2 is not None and val2 != st.session_state.last_click2:
+            st.session_state.soma_points.append((val2['x'], val2['y']))
+            st.session_state.last_click2 = val2
+            st.rerun()
+            
+        # Replicated Matplotlib Menu
+        b1, b2, b3 = st.columns([1,1,2])
+        b1.button("Undo Last ↺", on_click=undo_last)
+        b2.button("Clear All ✗", on_click=clear_all)
+        b3.button(f"Accept Somas ({len(st.session_state.soma_points)}) & Continue ✓", on_click=accept_all, type="primary")
+
+    elif st.session_state.ui_mode == 'qc':
+        st.markdown("### Step 3: Quality Control Dashboard")
+        st.button("← Back to Soma Selection", on_click=restart)
+        
+        if not st.session_state.soma_points:
+            st.warning("No cells selected.")
+        
+        for idx, (raw_x, raw_y) in enumerate(st.session_state.soma_points, start=1):
+            st.divider()
+            st.subheader(f"🧠 Analysis for Cell {idx}")
+            
+            # 1. Isolation using inverse tuple convention (Y, X) for spatial geometry
+            comp_mask, (corr_x, corr_y) = get_connected_component(skeleton, (raw_y, raw_x))
+            
+            if comp_mask is None:
+                st.error(f"Soma {idx} Invalid: Unconnected Background Space.")
+                continue
+                
+            # 2. Extract Sholl Max Radii logic
             radii_list = []
-            max_radius = 500  # Fallback
-            farthest = measure_farthest_neurite(component_mask, [(corr_x, corr_y)])
+            max_radius = 500
+            farthest = measure_farthest_neurite(comp_mask, [(corr_x, corr_y)])
             if 1 in farthest:
                 ex, ey = farthest[1]
                 max_radius = np.sqrt((ex - corr_x)**2 + (ey - corr_y)**2)
                 max_radius = np.ceil(max_radius / step_size) * step_size
+                
+            additional_r = np.arange(max_radius, max_radius + (3 * step_size), step_size)
+            base_r = generate_concentric_circles(max_radius, step_size)
+            radii = np.unique(np.concatenate([base_r, additional_r]))
             
-            radii = generate_concentric_circles(max_radius, step_size)
-            intersections = compute_sholl_intersections(component_mask, corr_x, corr_y, radii)
+            intersections = compute_sholl_intersections(comp_mask, corr_x, corr_y, radii)
             
-            # --- Emulating The QC Dashboard View ---
-            st.markdown("### 3) Quality Control Dashboard (Virtual)")
+            # Generating exact Virtual Dashboard
             db_col1, db_col2 = st.columns([1, 1])
             
-            # Subplot 1: Isolated Cell Mask + Circles
-            fig_db, ax_db = plt.subplots(figsize=(6,6))
-            ax_db.imshow(component_mask, cmap='gray')
-            ax_db.scatter(corr_x, corr_y, color='cyan', s=50, label="Soma")
+            # Ax1: Mask with Somas
+            fig_mask, ax1 = plt.subplots(figsize=(6,6))
+            ax1.imshow(comp_mask, cmap='gray')
+            ax1.scatter(corr_x, corr_y, color='cyan', s=50, edgecolors='black')
             for r in radii:
-                c = plt.Circle((corr_x, corr_y), r, color='red', fill=False, linestyle='--', alpha=0.3)
-                ax_db.add_patch(c)
-            ax_db.axis('off')
-            ax_db.set_title("Isolated Voronoi Component Mask")
-            with db_col1:
-                st.pyplot(fig_db)
-
-            # Subplot 2: The Sholl Profile Plot
-            fig_sholl, ax_sholl = plt.subplots(figsize=(6,6))
-            ax_sholl.plot(radii, intersections, marker='o', linewidth=3, color='teal')
-            ax_sholl.fill_between(radii, 0, intersections, color='teal', alpha=0.2)
-            ax_sholl.set_xlabel("Radius (px)", fontweight='bold')
-            ax_sholl.set_ylabel("Intersections", fontweight='bold')
-            ax_sholl.set_title("Cell Sholl Curve", fontweight='bold')
-            sns.despine()
-            with db_col2:
-                st.pyplot(fig_sholl)
+                c_circle = plt.Circle((corr_x, corr_y), r, color='r', fill=False, linestyle='--', alpha=0.4)
+                ax1.add_patch(c_circle)
+            ax1.axis('off')
+            ax1.set_title("Voronoi Mask & Sholl Tracing")
+            db_col1.pyplot(fig_mask)
             
-            st.balloons()
+            # Ax2: Sholl Curve
+            fig_curve, ax2 = plt.subplots(figsize=(6,6))
+            ax2.plot(radii, intersections, marker='o', linewidth=3, color='teal')
+            ax2.fill_between(radii, 0, intersections, color='teal', alpha=0.2)
+            ax2.set_xlabel("Radius (px)", fontweight='bold')
+            ax2.set_ylabel("Intersections", fontweight='bold')
+            ax2.set_title("Arborization Profile", fontweight='bold')
+            sns.despine()
+            db_col2.pyplot(fig_curve)
+            plt.close('all')
+            
+        st.balloons()
