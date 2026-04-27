@@ -89,29 +89,33 @@ if uploaded_file is not None:
          st.error("Error loading image.")
          st.stop()
 
-    st.sidebar.header("Denoising Calibration")
-    h_val = st.sidebar.slider("NLM Parameter (h)", min_value=1, max_value=30, value=11, disabled=(st.session_state.ui_mode == 'qc'))
-    step_size = st.sidebar.number_input("Sholl Step Size (px)", min_value=1, max_value=50, value=4)
-
-    with st.spinner("Applying rigorous morphological filters..."):
-        processed_image, binary, skeleton = run_scientific_skeletonization(img_gray, h_val)
-
-    if st.session_state.ui_mode == 'selecting':
-        st.markdown("### Step 2: Interactive Cell Detection")
-        st.info("Click directly on ANY of the two images below to register a Soma coordinate. You can accumulate multiple cells exactly like in Matplotlib!")
+        # Prepare interactive display containers to arrange slider below images natively
+        main_img_container = st.container()
+        control_container = st.container()
         
-        # Prepare Interactive Overlays
-        ov_left = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
-        ov_right = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
-        ov_right[skeleton > 0] = [255, 0, 0] # Skeleton overlay
+        with control_container:
+            st.markdown("---")
+            st.markdown("#### 🎛️ Denoising Calibration")
+            c1, c2 = st.columns(2)
+            h_val = c1.slider("NLM Parameter (h)", min_value=1, max_value=30, value=11, disabled=(st.session_state.ui_mode == 'qc'))
+            step_size = c2.number_input("Sholl Step Size (px)", min_value=1, max_value=50, value=4)
         
-        # Draw all historic clicks
-        for idx, (cx, cy) in enumerate(st.session_state.soma_points, start=1):
-            neon_pink = (255, 20, 147) # Deep Pink for high visibility and contrast
-            cv2.circle(ov_left, (int(cx), int(cy)), 5, neon_pink, -1)
-            cv2.circle(ov_right, (int(cx), int(cy)), 5, neon_pink, -1)
-            cv2.putText(ov_left, str(idx), (int(cx)+10, int(cy)+10), cv2.FONT_HERSHEY_DUPLEX, 1.0, neon_pink, 2)
-            cv2.putText(ov_right, str(idx), (int(cx)+10, int(cy)+10), cv2.FONT_HERSHEY_DUPLEX, 1.0, neon_pink, 2)
+        with st.spinner("Applying rigorous morphological filters..."):
+            processed_image, binary, skeleton = run_scientific_skeletonization(img_gray, h_val)
+
+        with main_img_container:
+            ov_left = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
+            ov_right = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
+            ov_right[skeleton > 0] = [255, 0, 0] # Skeleton overlay
+            
+            # Draw all historic clicks
+            for idx, (cx, cy) in enumerate(st.session_state.soma_points, start=1):
+                neon_pink = (255, 20, 147) # Deep Pink for high visibility and contrast
+                cv2.circle(ov_left, (int(cx), int(cy)), 5, neon_pink, -1)
+                cv2.circle(ov_right, (int(cx), int(cy)), 5, neon_pink, -1)
+                # Sharp, pixel-perfect plain font
+                cv2.putText(ov_left, str(idx), (int(cx)+10, int(cy)+10), cv2.FONT_HERSHEY_PLAIN, 2.0, neon_pink, 2)
+                cv2.putText(ov_right, str(idx), (int(cx)+10, int(cy)+10), cv2.FONT_HERSHEY_PLAIN, 2.0, neon_pink, 2)
 
         # Scale display images to avoid scrollbars without using CSS overrides that break coordinate mapping
         DISPLAY_WIDTH = 700
@@ -159,6 +163,45 @@ if uploaded_file is not None:
         farthest_endpoints = measure_farthest_neurite(skeleton, st.session_state.soma_points)
         all_cells_sholl_data = []  # Accumulate ALL intersection data for the final plot
         
+        if st.session_state.soma_points:
+            st.markdown("#### 🌍 Global Topology Viewer")
+            st.info("Map showing all isolated somas, skeletons, and Sholl boundaries prior to analysis.")
+            
+            if len(img_gray.shape) == 2:
+                glob_ov = np.stack([img_gray]*3, axis=-1).copy()
+            else:
+                glob_ov = img_gray.copy()
+            
+            # Green global skeleton
+            glob_ov[skeleton > 0] = [0, 255, 0]
+            
+            from morphology_features import _circle_coords
+            # Loop quickly over cells to draw their individual radii and markers
+            for idx, (raw_x, raw_y) in enumerate(st.session_state.soma_points, start=1):
+                mask, (cx, cy) = get_connected_component(skeleton, (raw_y, raw_x))
+                if mask is None: continue
+                # Compute radi
+                m_rad = 500
+                ft = farthest_endpoints.get(idx)
+                if ft:
+                    m_rad = np.sqrt((ft[0] - cx)**2 + (ft[1] - cy)**2)
+                    m_rad = np.ceil(m_rad / step_size) * step_size
+                add_r = np.arange(m_rad, m_rad + (3 * step_size), step_size)
+                bs_r = generate_concentric_circles(m_rad, step_size)
+                rs = np.unique(np.concatenate([bs_r, add_r]))
+                
+                for r in rs:
+                    rr, cc = _circle_coords(cy, cx, int(r), glob_ov.shape[:2])
+                    glob_ov[rr, cc] = [255, 60, 60] # red rings
+                cv2.circle(glob_ov, (cx, cy), 5, (255, 20, 147), -1)
+                cv2.putText(glob_ov, str(idx), (cx+10, cy+10), cv2.FONT_HERSHEY_PLAIN, 2.0, (255, 20, 147), 2)
+            
+            fig_g, ax_g = plt.subplots(figsize=(10,10))
+            ax_g.imshow(glob_ov)
+            ax_g.axis('off')
+            st.pyplot(fig_g)
+            plt.close(fig_g)
+            
         for idx, (raw_x, raw_y) in enumerate(st.session_state.soma_points, start=1):
             st.divider()
             st.subheader(f"🧠 Analysis for Cell {idx}")
