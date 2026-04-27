@@ -7,7 +7,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 
 # Import the actual scientific components directly from the user's codebase!
 from run_sholl_pipeline import (
-    apply_adaptive_patching, process_patch, binarize_image, 
+    apply_adaptive_patching, process_patch, apply_tophat, binarize_image, 
     remove_small_fragments, remove_isolated_fibers, skeletonize_image, 
     bridge_nearby_fragments, apply_morph_close, apply_dilate,
     remove_isolated_fibers_refine, bridge_nearby_fragments_refine,
