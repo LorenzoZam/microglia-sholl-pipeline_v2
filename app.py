@@ -135,9 +135,11 @@ if uploaded_file is not None:
             )
 
         # ── Build overlay images ──────────────────────────────────────────────
+        # Left: patch-wise denoised image (colour)
         ov_left  = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
-        ov_right = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
-        ov_right[skeleton > 0] = [255, 255, 255]   # white skeleton overlay
+        # Right: pure skeleton on black background (no underlying image)
+        ov_right = np.zeros((*processed_image.shape, 3), dtype=np.uint8)
+        ov_right[skeleton > 0] = [255, 255, 255]   # white skeleton on black
 
         # Draw registered somas
         LIME_GREEN = (50, 205, 50)
@@ -223,13 +225,13 @@ if uploaded_file is not None:
 
         # ── Global Topology Viewer ────────────────────────────────────────────
         st.markdown("#### 🌍 Global Topology Viewer")
-        st.info("Full-field map: green skeleton, pink soma markers, red Sholl rings.")
+        st.info("Full-field map: white skeleton, green soma markers, red Sholl rings.")
 
         if len(img_gray.shape) == 2:
-            glob_ov = np.stack([img_gray] * 3, axis=-1).copy()
+            glob_ov = np.zeros((*img_gray.shape, 3), dtype=np.uint8)  # black background
         else:
-            glob_ov = img_gray.copy()
-        glob_ov[skeleton > 0] = [0, 255, 0]   # green skeleton
+            glob_ov = np.zeros((*img_gray.shape[:2], 3), dtype=np.uint8)
+        glob_ov[skeleton > 0] = [255, 255, 255]   # white skeleton
 
         LIME_GREEN = (50, 205, 50)
         for idx, (raw_x, raw_y) in enumerate(st.session_state.soma_points, start=1):
