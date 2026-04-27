@@ -169,10 +169,29 @@ if uploaded_file is not None:
             
             intersections = compute_sholl_intersections(comp_mask, corr_x, corr_y, radii)
             
-            # Generating exact Virtual Dashboard
-            db_col1, db_col2 = st.columns([1, 1])
+            # --- 3. EXHAUSTIVE MORPHOMETRIC EXTRACTION ---
+            with st.spinner(f"Extracting advanced morphometrics for Cell {idx}..."):
+                fd, _log_sizes, _log_counts = box_counting_fractal_dimension_with_data(comp_mask)
+                lac = box_counting_lacunarity(comp_mask)
+                import networkx as nx
+                G = skeleton_to_graph(comp_mask)
+                betw, clos = compute_graph_centralities(G)
+                sri = schoenen_ramification_index(intersections, radii, (corr_x, corr_y), comp_mask)
+                soma_area, soma_circ = soma_shape_metrics(binary, (corr_x, corr_y))
             
-            # Ax1: Mask with Somas
+            # --- 4. EXACT PIPELINE DASHBOARD REPLICATION ---
+            # Metric Card
+            m1, m2, m3, m4, m5, m6 = st.columns(6)
+            m1.metric("Fractal Dim", f"{fd:.3f}" if not np.isnan(fd) else "N/A")
+            m2.metric("Lacunarity", f"{lac:.2f}" if not np.isnan(lac) else "N/A")
+            m3.metric("Ramification", f"{sri:.2f}" if not np.isnan(sri) else "N/A")
+            m4.metric("Centrality", f"{betw:.3f}" if not np.isnan(betw) else "N/A")
+            m5.metric("Soma Area", f"{soma_area:.0f} px" if not np.isnan(soma_area) else "N/A")
+            m6.metric("Circularity", f"{soma_circ:.2f}" if not np.isnan(soma_circ) else "N/A")
+
+            db_col1, db_col2, db_col3 = st.columns([1.2, 1, 1])
+            
+            # Panel A: Voronoi Mask + Circles
             fig_mask, ax1 = plt.subplots(figsize=(6,6))
             ax1.imshow(comp_mask, cmap='gray')
             ax1.scatter(corr_x, corr_y, color='cyan', s=50, edgecolors='black')
@@ -180,18 +199,35 @@ if uploaded_file is not None:
                 c_circle = plt.Circle((corr_x, corr_y), r, color='r', fill=False, linestyle='--', alpha=0.4)
                 ax1.add_patch(c_circle)
             ax1.axis('off')
-            ax1.set_title("Voronoi Mask & Sholl Tracing")
+            ax1.set_title("A) Sholl Back-trace & Voronoi Mask", fontsize=10, fontweight='bold')
             db_col1.pyplot(fig_mask)
             
-            # Ax2: Sholl Curve
+            # Panel D: Fractal log-log
+            fig_frac, ax_d = plt.subplots(figsize=(6,6))
+            if len(_log_sizes) >= 2:
+                ax_d.scatter(_log_sizes, _log_counts, c='steelblue', s=40)
+                try:
+                    coeffs = np.polyfit(_log_sizes, _log_counts, 1)
+                    x_fit = np.linspace(_log_sizes.min(), _log_sizes.max(), 50)
+                    ax_d.plot(x_fit, np.polyval(coeffs, x_fit), 'r-', linewidth=2, label=f'D = {fd:.3f}')
+                    ax_d.legend(fontsize=10)
+                except:
+                    pass
+            ax_d.set_xlabel("log(1/s)", fontsize=9)
+            ax_d.set_ylabel("log N(s)", fontsize=9)
+            ax_d.set_title("D) Fractal Dimension", fontsize=10, fontweight='bold')
+            db_col2.pyplot(fig_frac)
+            
+            # Panel E: Sholl Curve
             fig_curve, ax2 = plt.subplots(figsize=(6,6))
             ax2.plot(radii, intersections, marker='o', linewidth=3, color='teal')
             ax2.fill_between(radii, 0, intersections, color='teal', alpha=0.2)
             ax2.set_xlabel("Radius (px)", fontweight='bold')
             ax2.set_ylabel("Intersections", fontweight='bold')
-            ax2.set_title("Arborization Profile", fontweight='bold')
+            ax2.set_title("E) Arborization Profile", fontsize=10, fontweight='bold')
             sns.despine()
-            db_col2.pyplot(fig_curve)
+            db_col3.pyplot(fig_curve)
+            
             plt.close('all')
             
         st.balloons()
