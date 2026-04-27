@@ -29,22 +29,25 @@ st.markdown("This web app perfectly replicates the rigorous mathematical pipelin
 
 @st.cache_data
 def run_scientific_skeletonization(image, h_val):
-    # Step-by-step rigorous pipeline
-    denoised = cv2.fastNlMeansDenoising(image, None, h=h_val, templateWindowSize=7, searchWindowSize=21)
-    # Adaptive Patching and Tophat (Simplified loop)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (35, 35))
-    tophat = cv2.morphologyEx(denoised, cv2.MORPH_TOPHAT, kernel)
-    binary = binarize_image(tophat)
-    cleaned = remove_small_fragments(binary, min_size=3)
-    sk_initial = remove_isolated_fibers(cleaned, min_length=3)
-    bridged = bridge_nearby_fragments(sk_initial, max_dist=5)
-    skel = skeletonize_image(bridged)
-    closed = apply_morph_close(skel)
+    # Strictly matched from main() in run_sholl_pipeline.py
+    global_var = np.var(image)
+    processed_image = apply_adaptive_patching(image, global_var)
+    
+    # NLM happens here equivalent to preview_denoising
+    denoised = cv2.fastNlMeansDenoising(processed_image, None, h=h_val, templateWindowSize=7, searchWindowSize=21)
+    
+    den_th_image = apply_tophat(denoised)
+    binary = binarize_image(den_th_image)
+    frag_filtered = remove_small_fragments(binary)
+    closed = apply_morph_close(frag_filtered)
     dilated = apply_dilate(closed)
-    cleaned_final = remove_small_fragments(dilated, min_size=5)
-    final_skel = remove_isolated_fibers_refine(cleaned_final, min_length=30)
-    final_skel = bridge_nearby_fragments_refine(final_skel, max_dist=12)
-    return binary, final_skel
+    skel = skeletonize_image(dilated)
+    bridged = bridge_nearby_fragments(skel)
+    refined = remove_isolated_fibers_refine(bridged)
+    bridge_refined = bridge_nearby_fragments_refine(refined)
+    skeleton = remove_isolated_fibers(bridge_refined)
+    
+    return binary, skeleton
 
 uploaded_file = st.file_uploader("Upload Image (TIFF/PNG/JPG)", type=["tif", "tiff", "png", "jpg", "jpeg"])
 
