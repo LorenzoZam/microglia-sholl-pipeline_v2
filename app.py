@@ -91,7 +91,7 @@ if uploaded_file is not None:
 
     st.sidebar.header("Denoising Calibration")
     h_val = st.sidebar.slider("NLM Parameter (h)", min_value=1, max_value=30, value=11, disabled=(st.session_state.ui_mode == 'qc'))
-    step_size = st.sidebar.number_input("Sholl Step Size (px)", min_value=1, max_value=50, value=10)
+    step_size = st.sidebar.number_input("Sholl Step Size (px)", min_value=1, max_value=50, value=4)
 
     with st.spinner("Applying rigorous morphological filters..."):
         processed_image, binary, skeleton = run_scientific_skeletonization(img_gray, h_val)
@@ -142,6 +142,8 @@ if uploaded_file is not None:
         
         if not st.session_state.soma_points:
             st.warning("No cells selected.")
+            
+        farthest_endpoints = measure_farthest_neurite(skeleton, st.session_state.soma_points)
         
         for idx, (raw_x, raw_y) in enumerate(st.session_state.soma_points, start=1):
             st.divider()
@@ -157,9 +159,10 @@ if uploaded_file is not None:
             # 2. Extract Sholl Max Radii logic
             radii_list = []
             max_radius = 500
-            farthest = measure_farthest_neurite(comp_mask, [(corr_x, corr_y)])
-            if 1 in farthest:
-                ex, ey = farthest[1]
+            
+            farthest = farthest_endpoints.get(idx)
+            if farthest:
+                ex, ey = farthest
                 max_radius = np.sqrt((ex - corr_x)**2 + (ey - corr_y)**2)
                 max_radius = np.ceil(max_radius / step_size) * step_size
                 
@@ -191,13 +194,38 @@ if uploaded_file is not None:
 
             db_col1, db_col2, db_col3 = st.columns([1.2, 1, 1])
             
-            # Panel A: Voronoi Mask + Circles
+            # Panel A: Voronoi Mask + Circles (Exact Matplotlib style with RGB overlay and Cropping)
             fig_mask, ax1 = plt.subplots(figsize=(6,6))
-            ax1.imshow(comp_mask, cmap='gray')
-            ax1.scatter(corr_x, corr_y, color='cyan', s=50, edgecolors='black')
+            
+            if len(img_gray.shape) == 2:
+                overlay_panel = np.stack([img_gray]*3, axis=-1).copy()
+            else:
+                overlay_panel = img_gray.copy()
+            
+            skel_bool = np.asarray(comp_mask, dtype=bool)
+            overlay_panel[skel_bool] = [0, 255, 0] # Green skeleton
+            
+            from morphology_features import _circle_coords
             for r in radii:
-                c_circle = plt.Circle((corr_x, corr_y), r, color='r', fill=False, linestyle='--', alpha=0.4)
-                ax1.add_patch(c_circle)
+                rr, cc = _circle_coords(corr_y, corr_x, int(r), overlay_panel.shape[:2])
+                overlay_panel[rr, cc] = [255, 60, 60] # Red circles
+                
+            # Draw soma
+            for dr in range(-3, 4):
+                for dc in range(-3, 4):
+                    rr, cc_s = corr_y + dr, corr_x + dc
+                    if 0 <= rr < overlay_panel.shape[0] and 0 <= cc_s < overlay_panel.shape[1]:
+                        if dr*dr + dc*dc <= 9:
+                            overlay_panel[rr, cc_s] = [255, 255, 0]
+                            
+            # Crop around soma
+            crop_r = int(max(radii) * 1.3) if len(radii) > 0 else 100
+            r0 = max(0, corr_y - crop_r)
+            r1 = min(overlay_panel.shape[0], corr_y + crop_r)
+            c0 = max(0, corr_x - crop_r)
+            c1 = min(overlay_panel.shape[1], corr_x + crop_r)
+            
+            ax1.imshow(overlay_panel[r0:r1, c0:c1])
             ax1.axis('off')
             ax1.set_title("A) Sholl Back-trace & Voronoi Mask", fontsize=10, fontweight='bold')
             db_col1.pyplot(fig_mask)
