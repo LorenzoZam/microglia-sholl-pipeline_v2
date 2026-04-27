@@ -130,14 +130,14 @@ if uploaded_file is not None:
             
         # Detect new clicks
         if val1 is not None and val1 != st.session_state.last_click1:
-            real_x = val1['x'] / scale_ratio
-            real_y = val1['y'] / scale_ratio
+            real_x = int(val1['x'] / scale_ratio)
+            real_y = int(val1['y'] / scale_ratio)
             st.session_state.soma_points.append((real_x, real_y))
             st.session_state.last_click1 = val1
             st.rerun()
         if val2 is not None and val2 != st.session_state.last_click2:
-            real_x = val2['x'] / scale_ratio
-            real_y = val2['y'] / scale_ratio
+            real_x = int(val2['x'] / scale_ratio)
+            real_y = int(val2['y'] / scale_ratio)
             st.session_state.soma_points.append((real_x, real_y))
             st.session_state.last_click2 = val2
             st.rerun()
