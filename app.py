@@ -137,17 +137,17 @@ if uploaded_file is not None:
         # ── Build overlay images ──────────────────────────────────────────────
         ov_left  = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
         ov_right = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
-        ov_right[skeleton > 0] = [255, 0, 0]   # red skeleton overlay
+        ov_right[skeleton > 0] = [255, 255, 255]   # white skeleton overlay
 
         # Draw registered somas
-        NEON_PINK = (255, 20, 147)
+        LIME_GREEN = (50, 205, 50)
         for idx, (cx, cy) in enumerate(st.session_state.soma_points, start=1):
-            cv2.circle(ov_left,  (int(cx), int(cy)), 5, NEON_PINK, -1)
-            cv2.circle(ov_right, (int(cx), int(cy)), 5, NEON_PINK, -1)
+            cv2.circle(ov_left,  (int(cx), int(cy)), 5, LIME_GREEN, -1)
+            cv2.circle(ov_right, (int(cx), int(cy)), 5, LIME_GREEN, -1)
             cv2.putText(ov_left,  str(idx), (int(cx)+10, int(cy)+10),
-                        cv2.FONT_HERSHEY_PLAIN, 2.0, NEON_PINK, 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, LIME_GREEN, 2, cv2.LINE_AA)
             cv2.putText(ov_right, str(idx), (int(cx)+10, int(cy)+10),
-                        cv2.FONT_HERSHEY_PLAIN, 2.0, NEON_PINK, 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, LIME_GREEN, 2, cv2.LINE_AA)
 
         # Scale down to avoid scrollbars while preserving coordinate fidelity
         DISPLAY_WIDTH = 700
@@ -231,7 +231,7 @@ if uploaded_file is not None:
             glob_ov = img_gray.copy()
         glob_ov[skeleton > 0] = [0, 255, 0]   # green skeleton
 
-        NEON_PINK = (255, 20, 147)
+        LIME_GREEN = (50, 205, 50)
         for idx, (raw_x, raw_y) in enumerate(st.session_state.soma_points, start=1):
             result = get_connected_component(skeleton, (raw_y, raw_x))
             if result[0] is None:
@@ -249,10 +249,10 @@ if uploaded_file is not None:
             rs        = np.unique(np.concatenate([base_r, add_r]))
             for r in rs:
                 rr, cc = _circle_coords(cy, cx, int(r), glob_ov.shape[:2])
-                glob_ov[rr, cc] = [255, 60, 60]
-            cv2.circle(glob_ov, (cx, cy), 5, NEON_PINK, -1)
+                glob_ov[rr, cc] = [255, 60, 60]   # red rings
+            cv2.circle(glob_ov, (cx, cy), 5, LIME_GREEN, -1)
             cv2.putText(glob_ov, str(idx), (cx + 10, cy + 10),
-                        cv2.FONT_HERSHEY_PLAIN, 2.0, NEON_PINK, 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, LIME_GREEN, 2, cv2.LINE_AA)
 
         fig_g, ax_g = plt.subplots(figsize=(12, 10))
         ax_g.imshow(glob_ov)
@@ -376,9 +376,10 @@ if uploaded_file is not None:
             st.divider()
             st.markdown("### 📈 Global Pipeline Report")
             df_sholl = pd.DataFrame(all_cells_sholl_data)
+            n_cells  = df_sholl["Cell"].nunique()
 
             pcol1, pcol2 = st.columns([1, 3])
-            palette_opt  = pcol1.selectbox(
+            palette_opt   = pcol1.selectbox(
                 "🎨 Select Palette",
                 ["colorblind", "husl", "viridis", "magma", "Set2", "flare", "mako"],
             )
@@ -386,23 +387,44 @@ if uploaded_file is not None:
                 "Conversion Factor (µm/px)",
                 min_value=0.01, max_value=10.0, value=0.56, step=0.01,
             ))
+            show_individual = pcol1.toggle(
+                "Show individual cell curves", value=False,
+                help="Off = show only mean ± CI; On = show one trace per cell"
+            )
             df_sholl["Radius (µm)"] = df_sholl["Radius (px)"] * conv_factor
 
             fig_global, ax_glob = plt.subplots(figsize=(10, 6))
-            sns.lineplot(
-                data=df_sholl, x="Radius (µm)", y="Intersections",
-                hue="Cell", alpha=0.6, linewidth=1.5, palette=palette_opt, ax=ax_glob,
-            )
-            sns.lineplot(
-                data=df_sholl, x="Radius (µm)", y="Intersections",
-                color="black", linewidth=2.5, errorbar=None,
-                label="Mean Trend", ax=ax_glob,
-            )
+
+            if show_individual:
+                # Individual traces + mean on top
+                sns.lineplot(
+                    data=df_sholl, x="Radius (µm)", y="Intersections",
+                    hue="Cell", alpha=0.55, linewidth=1.2,
+                    palette=palette_opt, ax=ax_glob,
+                )
+                sns.lineplot(
+                    data=df_sholl, x="Radius (µm)", y="Intersections",
+                    color="black", linewidth=2.5, errorbar=None,
+                    label="Mean", ax=ax_glob,
+                )
+            else:
+                # PRIMARY MODE: mean ± 95 % CI, individual curves hidden
+                # Build a neutral colour from the chosen palette
+                palette_colors = sns.color_palette(palette_opt, n_colors=1)
+                mean_color = palette_colors[0]
+                sns.lineplot(
+                    data=df_sholl, x="Radius (µm)", y="Intersections",
+                    color=mean_color, linewidth=2.5, errorbar=("ci", 95),
+                    err_kws={"alpha": 0.25}, ax=ax_glob,
+                    label=f"Mean ± 95% CI  (n={n_cells})",
+                )
+
             ax_glob.set_xlabel("Distance from Soma (µm)", fontweight="bold", fontsize=12)
             ax_glob.set_ylabel("Number of Intersections",  fontweight="bold", fontsize=12)
             ax_glob.set_title(
                 "Aggregated Sholl Morphometric Analysis", fontweight="bold", fontsize=14
             )
+            ax_glob.legend(fontsize=10, frameon=False)
             sns.despine()
             pcol2.pyplot(fig_global)
             plt.close(fig_global)
