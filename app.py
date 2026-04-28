@@ -19,31 +19,76 @@ from run_sholl_pipeline import (
 from morphology_features import (
     box_counting_fractal_dimension_with_data, box_counting_lacunarity,
     skeleton_to_graph, compute_graph_centralities,
-    schoenen_ramification_index, soma_shape_metrics, _circle_coords
+    schoenen_ramification_index, soma_shape_metrics, _circle_coords,
+    generate_qc_dashboard
 )
 
 # ─────────────────────────────────────────────────────────────
-# PAGE CONFIG
+# CONFIG CONSTANTS  (7.2)
 # ─────────────────────────────────────────────────────────────
-st.set_page_config(page_title="🔬 Sholl Analysis Pipeline", layout="wide", page_icon="🧠")
+DISPLAY_WIDTH_PX   = 700
+DEFAULT_MAX_RADIUS = 500
+CROP_MARGIN_FACTOR = 1.3
+DEFAULT_UM_PER_PX  = 0.56
+SOMA_GREEN         = (50, 205, 50)
+
+# Biological reference ranges for flag coloring  (5.2)
+BIO_RANGES = {
+    "fd":        (0.7,  1.8),
+    "lac":       (1.0,  10.0),
+    "betw":      (0.0,  0.5),
+    "clos":      (0.0,  0.3),
+    "sri":       (0.5,  20.0),
+    "soma_area": (50.0, 2000.0),
+    "soma_circ": (0.03, 1.0),
+}
+
+def _flag_color(value, lo, hi):
+    if np.isnan(value): return "red"
+    return "green" if lo <= value <= hi else "darkorange"
+
+def _metric_badge(col, label, value, fmt, key, unit=""):
+    """Render st.metric with a colored caption flag.  (5.2)"""
+    lo, hi = BIO_RANGES.get(key, (None, None))
+    disp = (fmt.format(value) + unit) if not np.isnan(value) else "N/A"
+    col.metric(label, disp)
+    if lo is not None and not np.isnan(value):
+        color = _flag_color(value, lo, hi)
+        col.markdown(
+            f"<div style='font-size:0.72rem;color:{color};margin-top:-14px'>"
+            f"{'✔ normal' if color=='green' else '⚠ outside ref'}</div>",
+            unsafe_allow_html=True,
+        )
+
+# ─────────────────────────────────────────────────────────────
+# PAGE CONFIG & HEADER  (5.1)
+# ─────────────────────────────────────────────────────────────
+st.set_page_config(page_title="🔬 MicroSholl", layout="wide", page_icon="🧠")
 sns.set_theme(style="ticks", context="talk", palette="colorblind")
 
-st.title("🔬 Automated Sholl Analysis Pipeline")
-st.markdown(
-    "This web app perfectly replicates the rigorous mathematical pipeline used in the "
-    "native desktop script. Upload your microscope image to trace its skeleton and extract "
-    "morphometrics using Voronoi isolation."
-)
+st.markdown("""
+<div style="background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);
+     padding:1.4rem 2rem;border-radius:12px;margin-bottom:1.2rem;">
+  <h1 style="color:#7ee8fa;margin:0;font-size:2.1rem;">🧠 MicroSholl</h1>
+  <p style="color:#cfd9df;margin:0.3rem 0 0;font-size:1rem;">
+    Advanced Microglia Morphology Analysis &nbsp;·&nbsp; v2.0
+  </p>
+</div>
+""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────
 # SESSION STATE
 # ─────────────────────────────────────────────────────────────
-if "soma_points"    not in st.session_state: st.session_state.soma_points    = []
-if "ui_mode"        not in st.session_state: st.session_state.ui_mode        = "selecting"
-if "last_click1"    not in st.session_state: st.session_state.last_click1    = None
-if "last_click2"    not in st.session_state: st.session_state.last_click2    = None
-if "rejected_cells" not in st.session_state: st.session_state.rejected_cells = set()
-if "chosen_sample"  not in st.session_state: st.session_state.chosen_sample  = None
+_defaults = dict(
+    soma_points=[], ui_mode="selecting",
+    last_click1=None, last_click2=None,
+    rejected_cells=set(), chosen_sample=None,
+    step_size=4, um_per_px=DEFAULT_UM_PER_PX,
+    confirm_restart=False,
+)
+for k, v in _defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 def undo_last():
     if st.session_state.soma_points:
@@ -52,23 +97,48 @@ def undo_last():
 def clear_all():
     st.session_state.soma_points = []
 
-def accept_all():
-    st.session_state.ui_mode = "qc"
+def accept_all(step_size_val, um_per_px_val):
+    """Persist user parameters before switching to QC.  (1.2, 2.2)"""
+    st.session_state.step_size = step_size_val
+    st.session_state.um_per_px = um_per_px_val
+    st.session_state.ui_mode   = "qc"
 
-def restart():
-    st.session_state.soma_points    = []
-    st.session_state.ui_mode        = "selecting"
-    st.session_state.rejected_cells = set()
+def _do_restart():
+    for k, v in _defaults.items():
+        st.session_state[k] = v if not isinstance(v, (list, set, dict)) else type(v)()
+    st.session_state.confirm_restart = False
 
 # ─────────────────────────────────────────────────────────────
-# CORE ALGORITHM (cached)
+# PROGRESS INDICATOR  (1.1)
+# ─────────────────────────────────────────────────────────────
+_step_labels = ["① Load Image", "② Select Somas", "③ QC & Analysis", "④ Export"]
+_step_idx    = {"selecting": 1, "qc": 2}.get(st.session_state.ui_mode, 0)
+
+def _step_html(label, active):
+    bg  = "#7ee8fa" if active else "#2c5364"
+    col = "#0f2027" if active else "#cfd9df"
+    fw  = "bold"    if active else "normal"
+    return (f"<span style='background:{bg};color:{col};font-weight:{fw};"
+            f"padding:4px 12px;border-radius:20px;font-size:0.85rem;margin:2px'>"
+            f"{label}</span>")
+
+st.markdown(
+    "<div style='margin-bottom:1rem'>" +
+    " &nbsp;›&nbsp; ".join(_step_html(l, i == _step_idx) for i, l in enumerate(_step_labels)) +
+    "</div>",
+    unsafe_allow_html=True,
+)
+
+# ─────────────────────────────────────────────────────────────
+# CORE ALGORITHM (cached)  (2.1 — accepts tmpl/search window)
 # ─────────────────────────────────────────────────────────────
 @st.cache_data
-def run_scientific_skeletonization(image, h_val):
+def run_scientific_skeletonization(image, h_val, tmpl_win=7, search_win=21):
     global_var      = np.var(image)
     processed_image = apply_adaptive_patching(image, global_var)
     denoised        = cv2.fastNlMeansDenoising(processed_image, None, h=h_val,
-                                               templateWindowSize=7, searchWindowSize=21)
+                                               templateWindowSize=tmpl_win,
+                                               searchWindowSize=search_win)
     den_th_image    = apply_tophat(denoised)
     binary          = binarize_image(den_th_image)
     frag_filtered   = remove_small_fragments(binary)
@@ -115,10 +185,9 @@ with tab_sample:
                 thumb_small = cv2.resize(thumb, (int(w * scale), int(h * scale)))
                 col.image(thumb_small, caption=name, use_container_width=True)
                 if col.button("Use", key=f"btn_{name}"):
-                    st.session_state.chosen_sample  = name
-                    st.session_state.soma_points    = []
-                    st.session_state.ui_mode        = "selecting"
-                    st.session_state.rejected_cells = set()
+                    for _k, _v in _defaults.items():
+                        st.session_state[_k] = _v if not isinstance(_v, (list, set, dict)) else type(_v)()
+                    st.session_state.chosen_sample = name
                     st.rerun()
 
         chosen = st.session_state.chosen_sample or samples[0]
@@ -137,13 +206,13 @@ with tab_upload:
             st.error("Error loading image.")
             st.stop()
         if st.session_state.get("last_uploaded") != uploaded_file.name:
-            st.session_state.soma_points    = []
-            st.session_state.ui_mode        = "selecting"
-            st.session_state.rejected_cells = set()
+            for _k, _v in _defaults.items():
+                st.session_state[_k] = _v if not isinstance(_v, (list, set, dict)) else type(_v)()
             st.session_state["last_uploaded"] = uploaded_file.name
 
-# Guard: nothing selected yet
+# Guard: nothing selected yet  (6.1)
 if img_gray is None:
+    st.info("👆 Please select a sample image or upload your own to begin.")
     st.stop()
 
 # ─────────────────────────────────────────────────────────────
@@ -151,9 +220,10 @@ if img_gray is None:
 # ─────────────────────────────────────────────────────────────
 if st.session_state.ui_mode == "selecting":
     st.markdown("### Step 2: Interactive Cell Detection")
-    st.info(
-        "Click directly on ANY of the two images below to register a Soma coordinate. "
-        "You can accumulate multiple cells exactly like in Matplotlib!"
+    st.caption(
+        "👆 Click on any **cell body (soma)** in either image below to register it. "
+        "The skeleton panel (right) helps you verify the tracing quality. "
+        "You can accumulate multiple cells."
     )
 
     img_container  = st.container()   # images rendered here
@@ -161,31 +231,42 @@ if st.session_state.ui_mode == "selecting":
 
     with ctrl_container:
         st.markdown("---")
-        st.markdown("#### 🎛️ Denoising Calibration")
-        c1, c2    = st.columns(2)
-        h_val     = c1.slider("NLM Parameter (h)", min_value=1, max_value=30, value=11)
-        step_size = int(c2.number_input("Sholl Step Size (px)", min_value=1, max_value=50, value=4))
+        st.markdown("#### 🎛️ Denoising & Analysis Parameters")
+        c1, c2, c3 = st.columns(3)
+        h_val       = c1.slider("NLM Parameter (h)", min_value=1, max_value=30, value=11)
+        step_size_w = int(c2.number_input("Sholl Step Size (px)", min_value=1, max_value=50, value=st.session_state.step_size))
+        um_per_px_w = float(c3.number_input(
+            "Pixel size (µm/px)", min_value=0.01, max_value=10.0,
+            value=st.session_state.um_per_px, step=0.01,
+            help="Microscope calibration factor — used for µm axis in the final plot."
+        ))
+
+        with st.expander("⚙️ Advanced Pipeline Settings", expanded=False):
+            adv1, adv2 = st.columns(2)
+            tmpl_win   = adv1.slider("NLM Template Window (px)", 5, 15, 7, step=2)
+            search_win = adv2.slider("NLM Search Window (px)", 11, 31, 21, step=2)
+            st.caption("ℹ️ Changing these clears the processing cache.")
 
     with st.spinner("Applying rigorous morphological filters..."):
-        processed_image, binary, skeleton = run_scientific_skeletonization(img_gray, h_val)
+        processed_image, binary, skeleton = run_scientific_skeletonization(
+            img_gray, h_val, tmpl_win, search_win
+        )
 
     # Build overlays
-    ov_left  = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)          # denoised
-    ov_right = np.zeros((*processed_image.shape, 3), dtype=np.uint8)      # black canvas
-    ov_right[skeleton > 0] = [255, 255, 255]                              # white skeleton
+    ov_left  = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
+    ov_right = np.zeros((*processed_image.shape, 3), dtype=np.uint8)
+    ov_right[skeleton > 0] = [255, 255, 255]
 
-    LIME_GREEN = (50, 205, 50)
     for idx, (cx, cy) in enumerate(st.session_state.soma_points, start=1):
-        cv2.circle(ov_left,  (int(cx), int(cy)), 5, LIME_GREEN, -1)
-        cv2.circle(ov_right, (int(cx), int(cy)), 5, LIME_GREEN, -1)
+        cv2.circle(ov_left,  (int(cx), int(cy)), 5, SOMA_GREEN, -1)
+        cv2.circle(ov_right, (int(cx), int(cy)), 5, SOMA_GREEN, -1)
         cv2.putText(ov_left,  str(idx), (int(cx)+10, int(cy)+10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, LIME_GREEN, 2, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, SOMA_GREEN, 2, cv2.LINE_AA)
         cv2.putText(ov_right, str(idx), (int(cx)+10, int(cy)+10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, LIME_GREEN, 2, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, SOMA_GREEN, 2, cv2.LINE_AA)
 
-    DISPLAY_WIDTH = 700
-    scale_ratio   = min(1.0, DISPLAY_WIDTH / float(ov_left.shape[1]))
-    new_dim       = (int(ov_left.shape[1] * scale_ratio), int(ov_left.shape[0] * scale_ratio))
+    scale_ratio    = min(1.0, DISPLAY_WIDTH_PX / float(ov_left.shape[1]))
+    new_dim        = (int(ov_left.shape[1] * scale_ratio), int(ov_left.shape[0] * scale_ratio))
     ov_left_small  = cv2.resize(ov_left,  new_dim, interpolation=cv2.INTER_AREA)
     ov_right_small = cv2.resize(ov_right, new_dim, interpolation=cv2.INTER_AREA)
 
@@ -198,31 +279,54 @@ if st.session_state.ui_mode == "selecting":
             st.markdown("**Skeleton Tracing**")
             val2 = streamlit_image_coordinates(ov_right_small, key="img2")
 
-    if val1 is not None and val1 != st.session_state.last_click1:
-        st.session_state.soma_points.append((int(val1["x"] / scale_ratio), int(val1["y"] / scale_ratio)))
-        st.session_state.last_click1 = val1
-        st.rerun()
-    if val2 is not None and val2 != st.session_state.last_click2:
-        st.session_state.soma_points.append((int(val2["x"] / scale_ratio), int(val2["y"] / scale_ratio)))
-        st.session_state.last_click2 = val2
-        st.rerun()
+    # --- FIX 6.2: dedup by (x,y) tuple, not full dict ---
+    if val1 is not None:
+        coord1 = (val1["x"], val1["y"])
+        if coord1 != st.session_state.last_click1:
+            st.session_state.soma_points.append(
+                (int(val1["x"] / scale_ratio), int(val1["y"] / scale_ratio)))
+            st.session_state.last_click1 = coord1
+            st.rerun()
+    if val2 is not None:
+        coord2 = (val2["x"], val2["y"])
+        if coord2 != st.session_state.last_click2:
+            st.session_state.soma_points.append(
+                (int(val2["x"] / scale_ratio), int(val2["y"] / scale_ratio)))
+            st.session_state.last_click2 = coord2
+            st.rerun()
 
     b1, b2, b3 = st.columns([1, 1, 2])
     b1.button("Undo Last ↺", on_click=undo_last)
     b2.button("Clear All ✗",  on_click=clear_all)
     b3.button(
         f"Accept Somas ({len(st.session_state.soma_points)}) & Continue ✓",
-        on_click=accept_all, type="primary",
+        on_click=accept_all, args=(step_size_w, um_per_px_w), type="primary",
     )
 
 # ─────────────────────────────────────────────────────────────
 # STEP 3 — QC DASHBOARD
 # ─────────────────────────────────────────────────────────────
 elif st.session_state.ui_mode == "qc":
-    step_size = 4   # locked at QC phase (same value used during selection)
+    # --- FIX 1.2: Read persisted step_size (not hardcoded 4) ---
+    step_size   = st.session_state.step_size
+    conv_factor = st.session_state.um_per_px
 
     st.markdown("### Step 3: Quality Control Dashboard")
-    st.button("← Back to Soma Selection", on_click=restart)
+
+    # --- FIX 1.3: confirmation before back ---
+    if st.session_state.confirm_restart:
+        st.warning("⚠️ This will clear all QC data. Are you sure?")
+        rb1, rb2 = st.columns(2)
+        if rb1.button("Yes, restart", type="primary"):
+            _do_restart()
+            st.rerun()
+        if rb2.button("Cancel"):
+            st.session_state.confirm_restart = False
+            st.rerun()
+    else:
+        if st.button("← Back to Soma Selection"):
+            st.session_state.confirm_restart = True
+            st.rerun()
 
     if not st.session_state.soma_points:
         st.warning("No cells selected.")
@@ -238,15 +342,14 @@ elif st.session_state.ui_mode == "qc":
     st.info("Full-field map: white skeleton, green soma markers, red Sholl rings.")
 
     glob_ov = np.zeros((*img_gray.shape[:2], 3), dtype=np.uint8)
-    glob_ov[skeleton > 0] = [255, 255, 255]   # white skeleton
+    glob_ov[skeleton > 0] = [255, 255, 255]
 
-    LIME_GREEN = (50, 205, 50)
     for idx, (raw_x, raw_y) in enumerate(st.session_state.soma_points, start=1):
         result = get_connected_component(skeleton, (raw_y, raw_x))
         if result[0] is None:
             continue
         _, (cx, cy) = result
-        m_rad = 500
+        m_rad = DEFAULT_MAX_RADIUS
         ft    = farthest_endpoints.get(idx)
         if ft:
             m_rad = np.ceil(np.sqrt((ft[0]-cx)**2 + (ft[1]-cy)**2) / step_size) * step_size
@@ -257,9 +360,9 @@ elif st.session_state.ui_mode == "qc":
         for r in rs:
             rr, cc = _circle_coords(cy, cx, int(r), glob_ov.shape[:2])
             glob_ov[rr, cc] = [255, 60, 60]
-        cv2.circle(glob_ov, (cx, cy), 5, LIME_GREEN, -1)
+        cv2.circle(glob_ov, (cx, cy), 5, SOMA_GREEN, -1)
         cv2.putText(glob_ov, str(idx), (cx+10, cy+10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, LIME_GREEN, 2, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, SOMA_GREEN, 2, cv2.LINE_AA)
 
     fig_g, ax_g = plt.subplots(figsize=(12, 10))
     ax_g.imshow(glob_ov)
@@ -269,6 +372,7 @@ elif st.session_state.ui_mode == "qc":
 
     # ── Per-cell analysis loop ────────────────────────────────
     all_cells_sholl_data = []
+    summary_rows = []
 
     for idx, (raw_x, raw_y) in enumerate(st.session_state.soma_points, start=1):
         st.divider()
@@ -276,10 +380,11 @@ elif st.session_state.ui_mode == "qc":
 
         comp_mask, (corr_x, corr_y) = get_connected_component(skeleton, (raw_y, raw_x))
         if comp_mask is None:
-            st.error(f"Soma {idx}: no connected skeleton found at this location.")
+            # --- FIX 6.3: informative warning ---
+            st.warning(f"Cell {idx}: No skeleton found near click — consider re-clicking closer to a branch.")
             continue
 
-        max_radius = 500
+        max_radius = DEFAULT_MAX_RADIUS
         farthest   = farthest_endpoints.get(idx)
         if farthest:
             ex, ey     = farthest
@@ -299,65 +404,30 @@ elif st.session_state.ui_mode == "qc":
             sri                         = schoenen_ramification_index(intersections, radii, (corr_x, corr_y), comp_mask)
             soma_area, soma_circ        = soma_shape_metrics(binary, (corr_x, corr_y))
 
+        # --- FIX 5.2: metric cards with biological reference flags ---
         m1, m2, m3, m4, m5, m6 = st.columns(6)
-        m1.metric("Fractal Dim",  f"{fd:.3f}"        if not np.isnan(fd)        else "N/A")
-        m2.metric("Lacunarity",   f"{lac:.2f}"       if not np.isnan(lac)       else "N/A")
-        m3.metric("Ramification", f"{sri:.2f}"       if not np.isnan(sri)       else "N/A")
-        m4.metric("Centrality",   f"{betw:.3f}"      if not np.isnan(betw)      else "N/A")
-        m5.metric("Soma Area",    f"{soma_area:.0f} px" if not np.isnan(soma_area) else "N/A")
-        m6.metric("Circularity",  f"{soma_circ:.2f}" if not np.isnan(soma_circ) else "N/A")
+        _metric_badge(m1, "Fractal Dim",  fd,        "{:.3f}", "fd")
+        _metric_badge(m2, "Lacunarity",   lac,       "{:.2f}", "lac")
+        _metric_badge(m3, "Ramification", sri,       "{:.2f}", "sri")
+        _metric_badge(m4, "Betweenness",  betw,      "{:.3f}", "betw")
+        _metric_badge(m5, "Soma Area",    soma_area, "{:.0f}", "soma_area", " px")
+        _metric_badge(m6, "Circularity",  soma_circ, "{:.2f}", "soma_circ")
 
-        db_col1, db_col2, db_col3 = st.columns([1.2, 1, 1])
-
-        # Panel A — Backtrace (RGB, cropped)
-        if len(img_gray.shape) == 2:
-            overlay_panel = np.stack([img_gray]*3, axis=-1).copy()
-        else:
-            overlay_panel = img_gray.copy()
-        overlay_panel[np.asarray(comp_mask, dtype=bool)] = [0, 255, 0]
-        for r in radii:
-            rr, cc = _circle_coords(corr_y, corr_x, int(r), overlay_panel.shape[:2])
-            overlay_panel[rr, cc] = [255, 60, 60]
-        for dr in range(-3, 4):
-            for dc in range(-3, 4):
-                rr, cc_s = corr_y+dr, corr_x+dc
-                if 0 <= rr < overlay_panel.shape[0] and 0 <= cc_s < overlay_panel.shape[1]:
-                    if dr*dr + dc*dc <= 9:
-                        overlay_panel[rr, cc_s] = [255, 255, 0]
-        crop_r = int(max(radii)*1.3) if len(radii) > 0 else 100
-        r0 = max(0, corr_y-crop_r);  r1 = min(overlay_panel.shape[0], corr_y+crop_r)
-        c0 = max(0, corr_x-crop_r);  c1 = min(overlay_panel.shape[1], corr_x+crop_r)
-        fig_bt, ax_bt = plt.subplots(figsize=(6, 6))
-        ax_bt.imshow(overlay_panel[r0:r1, c0:c1]);  ax_bt.axis("off")
-        ax_bt.set_title("A) Sholl Back-trace & Voronoi Mask", fontsize=10, fontweight="bold")
-        db_col1.pyplot(fig_bt)
-
-        # Panel D — Fractal log-log
-        fig_frac, ax_d = plt.subplots(figsize=(6, 6))
-        if len(_log_sizes) >= 2:
-            ax_d.scatter(_log_sizes, _log_counts, c="steelblue", s=40)
-            try:
-                coeffs = np.polyfit(_log_sizes, _log_counts, 1)
-                x_fit  = np.linspace(_log_sizes.min(), _log_sizes.max(), 50)
-                ax_d.plot(x_fit, np.polyval(coeffs, x_fit), "r-", linewidth=2,
-                          label=f"D = {fd:.3f}")
-                ax_d.legend(fontsize=10)
-            except Exception:
-                pass
-        ax_d.set_xlabel("log(1/s)", fontsize=9);  ax_d.set_ylabel("log N(s)", fontsize=9)
-        ax_d.set_title("D) Fractal Dimension", fontsize=10, fontweight="bold")
-        db_col2.pyplot(fig_frac)
-
-        # Panel E — Sholl curve
-        fig_curve, ax2 = plt.subplots(figsize=(6, 6))
-        ax2.plot(radii, intersections, marker="o", linewidth=3, color="teal")
-        ax2.fill_between(radii, 0, intersections, color="teal", alpha=0.2)
-        ax2.set_xlabel("Radius (px)", fontweight="bold")
-        ax2.set_ylabel("Intersections", fontweight="bold")
-        ax2.set_title("E) Arborization Profile", fontsize=10, fontweight="bold")
-        sns.despine();  db_col3.pyplot(fig_curve)
-
-        plt.close("all")
+        # --- FIX 3: Full 6-panel QC dashboard from morphology_features ---
+        metrics_dict = dict(
+            FD=fd, Lac=lac, Betw=betw, Clos=clos,
+            SRI=sri, Area=soma_area, Circ=soma_circ,
+            log_inv_sizes=_log_sizes, log_counts=_log_counts,
+        )
+        with st.spinner(f"Rendering QC dashboard for Cell {idx}..."):
+            fig_qc = generate_qc_dashboard(
+                img_gray, binary, skeleton, comp_mask,
+                (corr_x, corr_y), radii, intersections,
+                metrics_dict, G, idx
+            )
+        st.pyplot(fig_qc)
+        # --- FIX 7.3: close by reference, not plt.close("all") ---
+        plt.close(fig_qc)
 
         # Accept / Reject
         accepted = st.checkbox(
@@ -371,9 +441,38 @@ elif st.session_state.ui_mode == "qc":
                 all_cells_sholl_data.append({
                     "Radius (px)": r, "Intersections": inters, "Cell": f"Cell {idx}",
                 })
+            # --- FIX 4.1: collect summary row for table ---
+            summary_rows.append({
+                "Cell": f"Cell {idx}",
+                "Fractal Dim": round(fd, 4)        if not np.isnan(fd)        else float("nan"),
+                "Lacunarity":  round(lac, 4)       if not np.isnan(lac)       else float("nan"),
+                "Ramification":round(sri, 4)       if not np.isnan(sri)       else float("nan"),
+                "Betweenness": round(betw, 4)      if not np.isnan(betw)      else float("nan"),
+                "Soma Area px":round(soma_area, 1) if not np.isnan(soma_area) else float("nan"),
+                "Circularity": round(soma_circ, 4) if not np.isnan(soma_circ) else float("nan"),
+            })
         else:
             st.session_state.rejected_cells.add(idx)
             st.caption(f"⚠️ Cell {idx} excluded from Global Report.")
+
+    # ── FIX 4.1: Per-cell summary table ───────────────────────
+    if summary_rows:
+        st.divider()
+        st.markdown("#### 📋 Accepted Cells — Metrics Summary")
+        df_summary = pd.DataFrame(summary_rows).set_index("Cell")
+        st.dataframe(
+            df_summary.style.background_gradient(
+                subset=["Fractal Dim", "Lacunarity"], cmap="RdYlGn"
+            ).format(na_rep="N/A", precision=3),
+            use_container_width=True,
+        )
+        csv_metrics = df_summary.reset_index().to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "📥 Download Metrics CSV",
+            data=csv_metrics,
+            file_name="sholl_morphometrics.csv",
+            mime="text/csv",
+        )
 
     # ── Global Pipeline Report ────────────────────────────────
     if all_cells_sholl_data:
@@ -385,8 +484,6 @@ elif st.session_state.ui_mode == "qc":
         pcol1, pcol2 = st.columns([1, 3])
         palette_opt     = pcol1.selectbox("🎨 Palette",
             ["colorblind", "husl", "viridis", "magma", "Set2", "flare", "mako"])
-        conv_factor     = float(pcol1.number_input("Conversion Factor (µm/px)",
-            min_value=0.01, max_value=10.0, value=0.56, step=0.01))
         show_individual = pcol1.toggle("Show individual cell curves", value=False,
             help="Off = Mean ± SEM only; On = one trace per cell + mean")
 
@@ -405,7 +502,8 @@ elif st.session_state.ui_mode == "qc":
                 err_kws={"alpha": 0.25}, ax=ax_glob,
                 label=f"Mean ± SEM  (n={n_cells})")
 
-        ax_glob.set_xlabel("Distance from Soma (µm)", fontweight="bold", fontsize=12)
+        ax_glob.set_xlabel(f"Distance from Soma (µm)  [1 px = {conv_factor} µm]",
+                           fontweight="bold", fontsize=12)
         ax_glob.set_ylabel("Number of Intersections",  fontweight="bold", fontsize=12)
         ax_glob.set_title("Aggregated Sholl Morphometric Analysis", fontweight="bold", fontsize=14)
         ax_glob.legend(fontsize=10, frameon=False)
@@ -418,3 +516,4 @@ elif st.session_state.ui_mode == "qc":
             data=csv, file_name="sholl_analysis_results.csv", mime="text/csv",
             help="Download the full intersection table ready for GraphPad / Excel.",
         )
+
