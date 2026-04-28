@@ -8,3 +8,5 @@ streamlit
 streamlit-image-coordinates
 statsmodels
 patsy
+scikit-image
+networkx
