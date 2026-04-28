@@ -593,7 +593,8 @@ def _flag_color(value, lo, hi):
 
 def generate_qc_dashboard(original_image, binary_image, skeleton_mask,
                            cell_skeleton, soma_point, radii, intersections,
-                           metrics, graph, soma_id, output_path=None):
+                           metrics, graph, soma_id, output_path=None,
+                           streamlit_mode=False):
     """
     Display an interactive multi-panel QC dashboard for one cell.
 
@@ -810,6 +811,10 @@ def generate_qc_dashboard(original_image, binary_image, skeleton_mask,
     if output_path:
         fig.savefig(output_path, dpi=150, bbox_inches='tight')
 
+    # In Streamlit we just hand back the Figure for st.pyplot().
+    if streamlit_mode:
+        return fig
+
     # Add interactive Accept/Reject buttons to fix Windows input() crash
     ax_acc = plt.axes([0.65, 0.02, 0.08, 0.05])
     ax_rej = plt.axes([0.75, 0.02, 0.08, 0.05])
@@ -838,6 +843,10 @@ def generate_qc_dashboard(original_image, binary_image, skeleton_mask,
     btn_all.on_clicked(on_all)
     
     # Block script until one button is clicked or window is explicitly closed
+    try:
+        plt.get_current_fig_manager().window.state('zoomed')
+    except Exception:
+        pass
     plt.show(block=True)
 
     return response_container['choice']

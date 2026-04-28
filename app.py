@@ -423,7 +423,8 @@ elif st.session_state.ui_mode == "qc":
             fig_qc = generate_qc_dashboard(
                 img_gray, binary, skeleton, comp_mask,
                 (corr_x, corr_y), radii, intersections,
-                metrics_dict, G, idx
+                metrics_dict, G, idx,
+                streamlit_mode=True
             )
         st.pyplot(fig_qc)
         # --- FIX 7.3: close by reference, not plt.close("all") ---
