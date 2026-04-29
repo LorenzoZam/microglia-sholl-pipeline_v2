@@ -112,7 +112,16 @@ def _do_restart():
 # PROGRESS INDICATOR  (1.1)
 # ─────────────────────────────────────────────────────────────
 _step_labels = ["① Load Image", "② Select Somas", "③ QC & Analysis", "④ Export"]
-_step_idx    = {"selecting": 1, "qc": 2}.get(st.session_state.ui_mode, 0)
+
+# Determine current step: "selecting" without an image loaded = still on Step 1
+_has_image = (st.session_state.chosen_sample is not None
+              or st.session_state.get("last_uploaded") is not None)
+if st.session_state.ui_mode == "qc":
+    _step_idx = 2
+elif st.session_state.ui_mode == "selecting" and _has_image:
+    _step_idx = 1
+else:
+    _step_idx = 0
 
 def _step_html(label, active):
     bg  = "#7ee8fa" if active else "#2c5364"

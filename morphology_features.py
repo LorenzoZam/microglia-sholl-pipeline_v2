@@ -697,7 +697,7 @@ def generate_qc_dashboard(original_image, binary_image, skeleton_mask,
         fig = plt.figure(figsize=(16, 9))
         fig.suptitle(f"QC Dashboard  —  Soma {soma_id}", fontsize=13,
                      fontweight='bold', color='#333')
-        gs = GridSpec(2, 6, figure=fig, hspace=0.32, wspace=0.35)
+        gs = GridSpec(2, 6, figure=fig, hspace=0.32, wspace=0.55)
 
         # Row 1: A (2 cols) | B (2 cols) | C (2 cols)
         ax_a = fig.add_subplot(gs[0, 0:2])
