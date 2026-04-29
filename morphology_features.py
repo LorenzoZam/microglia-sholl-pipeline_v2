@@ -635,27 +635,32 @@ def generate_qc_dashboard(original_image, binary_image, skeleton_mask,
     -------
     matplotlib.figure.Figure
     """
-    fig = plt.figure(figsize=(18, 10))
-    fig.suptitle(f"QC Dashboard  ---  Soma {soma_id}", fontsize=14,
-                 fontweight='bold')
-    gs = GridSpec(2, 3, figure=fig, hspace=0.35, wspace=0.30)
-
+    # ── Shared helpers ───────────────────────────────────────────────────
     sx, sy = int(soma_point[0]), int(soma_point[1])
 
-    # ── Panel A: Backtrace overlay ──────────────────────────────────────
-    ax_a = fig.add_subplot(gs[0, 0])
-    # Build RGB overlay
+    # Pre-compute crop bounds (used by Panels A, B, C)
+    crop_r = int(max(radii) * 1.3) if len(radii) > 0 else 100
+    r0 = max(0, sy - crop_r)
+    r1 = min(original_image.shape[0], sy + crop_r)
+    c0 = max(0, sx - crop_r)
+    c1 = min(original_image.shape[1], sx + crop_r)
+
+    area_val = metrics.get('Area', np.nan)
+    circ_val = metrics.get('Circ', np.nan)
+    fd_val   = metrics.get('FD', np.nan)
+    sri_val  = metrics.get('SRI', np.nan)
+    log_inv  = metrics.get('log_inv_sizes', np.array([]))
+    log_cnt  = metrics.get('log_counts', np.array([]))
+
+    # ── Build overlay for Panel A ────────────────────────────────────────
     if len(original_image.shape) == 2:
         overlay = np.stack([original_image] * 3, axis=-1).copy()
     else:
         overlay = original_image.copy()
-    skel_bool = np.asarray(cell_skeleton, dtype=bool)
-    overlay[skel_bool] = [0, 255, 0]
-    # Draw Sholl circles
+    overlay[np.asarray(cell_skeleton, dtype=bool)] = [0, 255, 0]
     for r in radii:
         rr, cc = _circle_coords(sy, sx, int(r), overlay.shape[:2])
         overlay[rr, cc] = [255, 60, 60]
-    # Soma marker
     for dr in range(-3, 4):
         for dc in range(-3, 4):
             rr, cc_s = sy + dr, sx + dc
@@ -663,87 +668,153 @@ def generate_qc_dashboard(original_image, binary_image, skeleton_mask,
                 if dr*dr + dc*dc <= 9:
                     overlay[rr, cc_s] = [255, 255, 0]
 
-    # Crop around soma for better visibility
-    crop_r = int(max(radii) * 1.3) if len(radii) > 0 else 100
-    r0 = max(0, sy - crop_r)
-    r1 = min(overlay.shape[0], sy + crop_r)
-    c0 = max(0, sx - crop_r)
-    c1 = min(overlay.shape[1], sx + crop_r)
-    ax_a.imshow(overlay[r0:r1, c0:c1])
-    ax_a.set_title("A) Sholl Back-trace", fontsize=10, fontweight='bold')
-    ax_a.axis('off')
-
-    # ── Panel B: Soma region zoom ───────────────────────────────────────
-    ax_b = fig.add_subplot(gs[0, 1])
-    sr = 35  # zoom radius
-    y0 = max(0, sy - sr)
-    y1 = min(binary_image.shape[0], sy + sr)
-    x0 = max(0, sx - sr)
-    x1 = min(binary_image.shape[1], sx + sr)
+    # ── Build soma zoom for Panel B ──────────────────────────────────────
+    sr = 35
+    y0 = max(0, sy - sr);  y1 = min(binary_image.shape[0], sy + sr)
+    x0 = max(0, sx - sr);  x1 = min(binary_image.shape[1], sx + sr)
     soma_crop = binary_image[y0:y1, x0:x1].copy()
-    # Find contours in the crop
-    soma_u8 = (soma_crop > 0).astype(np.uint8) * 255
-    contours, _ = cv2.findContours(soma_u8, cv2.RETR_EXTERNAL,
-                                    cv2.CHAIN_APPROX_SIMPLE)
-    # Draw on RGB version
+    soma_u8   = (soma_crop > 0).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(soma_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     soma_rgb = np.stack([soma_crop] * 3, axis=-1)
     if soma_rgb.max() <= 1:
         soma_rgb = (soma_rgb * 255).astype(np.uint8)
     cv2.drawContours(soma_rgb, contours, -1, (0, 255, 255), 1)
-    # Mark soma center
     local_sy, local_sx = sy - y0, sx - x0
     cv2.circle(soma_rgb, (local_sx, local_sy), 2, (255, 255, 0), -1)
 
-    ax_b.imshow(soma_rgb)
-    area_val = metrics.get('Area', np.nan)
-    circ_val = metrics.get('Circ', np.nan)
     area_str = f"{area_val:.0f}" if not np.isnan(area_val) else "N/A"
     circ_str = f"{circ_val:.3f}" if not np.isnan(circ_val) else "N/A"
+
+    # ── Build skeleton graph visual for Panel C ──────────────────────────
+    skel_vis = np.zeros((*cell_skeleton.shape[:2], 3), dtype=np.uint8)
+    skel_vis[np.asarray(cell_skeleton, dtype=bool)] = [100, 100, 100]
+    skel_crop = skel_vis[r0:r1, c0:c1].copy()
+
+    # =====================================================================
+    #  STREAMLIT MODE — compact 5-panel layout (no redundant metric card)
+    # =====================================================================
+    if streamlit_mode:
+        fig = plt.figure(figsize=(16, 9))
+        fig.suptitle(f"QC Dashboard  —  Soma {soma_id}", fontsize=13,
+                     fontweight='bold', color='#333')
+        gs = GridSpec(2, 6, figure=fig, hspace=0.32, wspace=0.35)
+
+        # Row 1: A (2 cols) | B (2 cols) | C (2 cols)
+        ax_a = fig.add_subplot(gs[0, 0:2])
+        ax_a.imshow(overlay[r0:r1, c0:c1]);  ax_a.axis('off')
+        ax_a.set_title("A) Sholl Back-trace", fontsize=10, fontweight='bold')
+
+        ax_b = fig.add_subplot(gs[0, 2:4])
+        ax_b.imshow(soma_rgb);  ax_b.axis('off')
+        ax_b.set_title(f"B) Soma  |  Area={area_str} px  Circ={circ_str}",
+                        fontsize=10, fontweight='bold')
+
+        ax_c = fig.add_subplot(gs[0, 4:6])
+        ax_c.imshow(skel_crop);  ax_c.axis('off')
+        if graph.number_of_nodes() > 0:
+            betw_dict = nx.betweenness_centrality(graph, weight='weight') \
+                if graph.number_of_nodes() >= 2 else {}
+            for nid, data in graph.nodes(data=True):
+                pos = data.get('pos', None)
+                if pos is None:
+                    continue
+                nr, nc = pos
+                pr, pc = nr - r0, nc - c0
+                if 0 <= pr < skel_crop.shape[0] and 0 <= pc < skel_crop.shape[1]:
+                    degree = graph.degree(nid)
+                    b = betw_dict.get(nid, 0)
+                    size = max(3, int(b * 40))
+                    color = 'cyan' if degree == 1 else 'red'
+                    ax_c.plot(pc, pr, 'o', color=color, markersize=size, alpha=0.8)
+        ax_c.set_title(f"C) Skeleton Graph  |  {graph.number_of_nodes()} nodes  "
+                        f"{graph.number_of_edges()} edges",
+                        fontsize=10, fontweight='bold')
+
+        # Row 2: D (3 cols) | E (3 cols) — wider panels for charts
+        ax_d = fig.add_subplot(gs[1, 0:3])
+        if len(log_inv) >= 2:
+            ax_d.scatter(log_inv, log_cnt, c='steelblue', s=40, zorder=3)
+            try:
+                coeffs = np.polyfit(log_inv, log_cnt, 1)
+                x_fit  = np.linspace(log_inv.min(), log_inv.max(), 50)
+                ax_d.plot(x_fit, np.polyval(coeffs, x_fit), 'r-', linewidth=2,
+                          label=f'D = {fd_val:.3f}')
+                ax_d.legend(fontsize=10, loc='lower right')
+            except np.linalg.LinAlgError:
+                ax_d.text(0.5, 0.5, "Fit failed", ha='center', va='center',
+                          transform=ax_d.transAxes, fontsize=12, color='red')
+        else:
+            ax_d.text(0.5, 0.5, "Insufficient data", ha='center', va='center',
+                      transform=ax_d.transAxes, fontsize=12, color='red')
+        ax_d.set_xlabel("log(1/s)", fontsize=9)
+        ax_d.set_ylabel("log N(s)", fontsize=9)
+        ax_d.set_title("D) Fractal Dimension (box-counting)", fontsize=10, fontweight='bold')
+        ax_d.grid(True, alpha=0.3)
+
+        ax_e = fig.add_subplot(gs[1, 3:6])
+        radii_arr = np.asarray(radii)
+        inter_arr = np.asarray(intersections)
+        ax_e.plot(radii_arr, inter_arr, 'o-', color='steelblue', linewidth=1.5, markersize=4)
+        ax_e.fill_between(radii_arr, 0, inter_arr, alpha=0.15, color='steelblue')
+        ax_e.set_xlabel("Radius (px)", fontsize=9)
+        ax_e.set_ylabel("Intersections", fontsize=9)
+        sri_str = f"SRI={sri_val:.2f}" if not np.isnan(sri_val) else "SRI=N/A"
+        ax_e.set_title(f"E) Sholl Profile  |  {sri_str}", fontsize=10, fontweight='bold')
+        ax_e.grid(True, alpha=0.3)
+
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        if output_path:
+            fig.savefig(output_path, dpi=150, bbox_inches='tight')
+        return fig
+
+    # =====================================================================
+    #  DESKTOP MODE — original 6-panel layout with interactive buttons
+    # =====================================================================
+    fig = plt.figure(figsize=(18, 10))
+    fig.suptitle(f"QC Dashboard  ---  Soma {soma_id}", fontsize=14,
+                 fontweight='bold')
+    gs = GridSpec(2, 3, figure=fig, hspace=0.35, wspace=0.30)
+
+    # Panel A
+    ax_a = fig.add_subplot(gs[0, 0])
+    ax_a.imshow(overlay[r0:r1, c0:c1])
+    ax_a.set_title("A) Sholl Back-trace", fontsize=10, fontweight='bold')
+    ax_a.axis('off')
+
+    # Panel B
+    ax_b = fig.add_subplot(gs[0, 1])
+    ax_b.imshow(soma_rgb)
     ax_b.set_title(f"B) Soma  |  Area={area_str} px  Circ={circ_str}",
                     fontsize=10, fontweight='bold')
     ax_b.axis('off')
 
-    # ── Panel C: Skeleton Graph ─────────────────────────────────────────
+    # Panel C
     ax_c = fig.add_subplot(gs[0, 2])
-    # Draw skeleton in gray, then overlay graph nodes
-    skel_vis = np.zeros((*cell_skeleton.shape[:2], 3), dtype=np.uint8)
-    skel_vis[np.asarray(cell_skeleton, dtype=bool)] = [100, 100, 100]
-    # Crop around soma
-    skel_crop = skel_vis[r0:r1, c0:c1].copy()
     ax_c.imshow(skel_crop)
-
     if graph.number_of_nodes() > 0:
-        # Classify nodes
         betw_dict = nx.betweenness_centrality(graph, weight='weight') \
             if graph.number_of_nodes() >= 2 else {}
         for nid, data in graph.nodes(data=True):
             pos = data.get('pos', None)
             if pos is None:
                 continue
-            nr, nc = pos  # row, col
-            # Convert to crop coordinates
+            nr, nc = pos
             pr, pc = nr - r0, nc - c0
             if 0 <= pr < skel_crop.shape[0] and 0 <= pc < skel_crop.shape[1]:
                 degree = graph.degree(nid)
                 b = betw_dict.get(nid, 0)
                 size = max(3, int(b * 40))
-                color = 'cyan' if degree == 1 else 'red'  # endpoint vs junction
+                color = 'cyan' if degree == 1 else 'red'
                 ax_c.plot(pc, pr, 'o', color=color, markersize=size, alpha=0.8)
-
     ax_c.set_title(f"C) Skeleton Graph  |  {graph.number_of_nodes()} nodes  "
                     f"{graph.number_of_edges()} edges",
                     fontsize=10, fontweight='bold')
     ax_c.axis('off')
 
-    # ── Panel D: Fractal log-log ────────────────────────────────────────
+    # Panel D
     ax_d = fig.add_subplot(gs[1, 0])
-    log_inv = metrics.get('log_inv_sizes', np.array([]))
-    log_cnt = metrics.get('log_counts', np.array([]))
-    fd_val = metrics.get('FD', np.nan)
-
     if len(log_inv) >= 2:
         ax_d.scatter(log_inv, log_cnt, c='steelblue', s=40, zorder=3)
-        # Regression line
         try:
             coeffs = np.polyfit(log_inv, log_cnt, 1)
             x_fit = np.linspace(log_inv.min(), log_inv.max(), 50)
@@ -758,30 +829,24 @@ def generate_qc_dashboard(original_image, binary_image, skeleton_mask,
                   transform=ax_d.transAxes, fontsize=12, color='red')
     ax_d.set_xlabel("log(1/s)", fontsize=9)
     ax_d.set_ylabel("log N(s)", fontsize=9)
-    ax_d.set_title("D) Fractal Dimension (box-counting)", fontsize=10,
-                    fontweight='bold')
+    ax_d.set_title("D) Fractal Dimension (box-counting)", fontsize=10, fontweight='bold')
     ax_d.grid(True, alpha=0.3)
 
-    # ── Panel E: Sholl profile for this cell ────────────────────────────
+    # Panel E
     ax_e = fig.add_subplot(gs[1, 1])
     radii_arr = np.asarray(radii)
     inter_arr = np.asarray(intersections)
-    ax_e.plot(radii_arr, inter_arr, 'o-', color='steelblue', linewidth=1.5,
-              markersize=4)
+    ax_e.plot(radii_arr, inter_arr, 'o-', color='steelblue', linewidth=1.5, markersize=4)
     ax_e.fill_between(radii_arr, 0, inter_arr, alpha=0.15, color='steelblue')
     ax_e.set_xlabel("Radius (px)", fontsize=9)
     ax_e.set_ylabel("Intersections", fontsize=9)
-    sri_val = metrics.get('SRI', np.nan)
     sri_str = f"SRI={sri_val:.2f}" if not np.isnan(sri_val) else "SRI=N/A"
-    ax_e.set_title(f"E) Sholl Profile  |  {sri_str}", fontsize=10,
-                    fontweight='bold')
+    ax_e.set_title(f"E) Sholl Profile  |  {sri_str}", fontsize=10, fontweight='bold')
     ax_e.grid(True, alpha=0.3)
 
-    # ── Panel F: Metric card ────────────────────────────────────────────
+    # Panel F (desktop only — metric summary card)
     ax_f = fig.add_subplot(gs[1, 2])
     ax_f.axis('off')
-
-    # Define metrics with expected normal ranges
     metric_rows = [
         ("Fractal Dimension", fd_val, 0.7, 1.8),
         ("Lacunarity", metrics.get('Lac', np.nan), 1.0, 10.0),
@@ -791,16 +856,13 @@ def generate_qc_dashboard(original_image, binary_image, skeleton_mask,
         ("Soma Area (px)", area_val, 50.0, 2000.0),
         ("Soma Circularity", circ_val, 0.03, 1.0),
     ]
-
     y_pos = 0.92
     ax_f.text(0.05, y_pos + 0.06, "F) Metric Summary",
               fontsize=11, fontweight='bold', transform=ax_f.transAxes)
-
     for name, val, lo, hi in metric_rows:
         color = _flag_color(val, lo, hi)
         val_str = f"{val:.4f}" if not np.isnan(val) else "N/A"
-        marker = "o" if color == 'green' else ("!" if color == 'darkorange'
-                                                else "X")
+        marker = "o" if color == 'green' else ("!" if color == 'darkorange' else "X")
         ax_f.text(0.05, y_pos, f"[{marker}]  {name}:  {val_str}",
                   fontsize=10, color=color, transform=ax_f.transAxes,
                   fontfamily='monospace')
@@ -810,9 +872,6 @@ def generate_qc_dashboard(original_image, binary_image, skeleton_mask,
 
     if output_path:
         fig.savefig(output_path, dpi=150, bbox_inches='tight')
-
-    # In Streamlit we just hand back the Figure for st.pyplot().
-    if streamlit_mode:
         return fig
 
     # Add interactive Accept/Reject buttons to fix Windows input() crash
