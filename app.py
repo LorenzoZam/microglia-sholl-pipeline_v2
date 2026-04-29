@@ -337,38 +337,38 @@ elif st.session_state.ui_mode == "qc":
 
     farthest_endpoints = measure_farthest_neurite(skeleton, st.session_state.soma_points)
 
-    # ── Global Topology Viewer ────────────────────────────────
-    st.markdown("#### 🌍 Global Topology Viewer")
-    st.info("Full-field map: white skeleton, green soma markers, red Sholl rings.")
+    # ── Global Topology Viewer (compact) ────────────────────────
+    with st.expander("🌍 Global Topology Viewer", expanded=True):
+        st.caption("Full-field map: white skeleton · green soma markers · red Sholl rings")
 
-    glob_ov = np.zeros((*img_gray.shape[:2], 3), dtype=np.uint8)
-    glob_ov[skeleton > 0] = [255, 255, 255]
+        glob_ov = np.zeros((*img_gray.shape[:2], 3), dtype=np.uint8)
+        glob_ov[skeleton > 0] = [255, 255, 255]
 
-    for idx, (raw_x, raw_y) in enumerate(st.session_state.soma_points, start=1):
-        result = get_connected_component(skeleton, (raw_y, raw_x))
-        if result[0] is None:
-            continue
-        _, (cx, cy) = result
-        m_rad = DEFAULT_MAX_RADIUS
-        ft    = farthest_endpoints.get(idx)
-        if ft:
-            m_rad = np.ceil(np.sqrt((ft[0]-cx)**2 + (ft[1]-cy)**2) / step_size) * step_size
-        rs = np.unique(np.concatenate([
-            generate_concentric_circles(m_rad, step_size),
-            np.arange(m_rad, m_rad + 3*step_size, step_size)
-        ]))
-        for r in rs:
-            rr, cc = _circle_coords(cy, cx, int(r), glob_ov.shape[:2])
-            glob_ov[rr, cc] = [255, 60, 60]
-        cv2.circle(glob_ov, (cx, cy), 5, SOMA_GREEN, -1)
-        cv2.putText(glob_ov, str(idx), (cx+10, cy+10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, SOMA_GREEN, 2, cv2.LINE_AA)
+        for idx, (raw_x, raw_y) in enumerate(st.session_state.soma_points, start=1):
+            result = get_connected_component(skeleton, (raw_y, raw_x))
+            if result[0] is None:
+                continue
+            _, (cx, cy) = result
+            m_rad = DEFAULT_MAX_RADIUS
+            ft    = farthest_endpoints.get(idx)
+            if ft:
+                m_rad = np.ceil(np.sqrt((ft[0]-cx)**2 + (ft[1]-cy)**2) / step_size) * step_size
+            rs = np.unique(np.concatenate([
+                generate_concentric_circles(m_rad, step_size),
+                np.arange(m_rad, m_rad + 3*step_size, step_size)
+            ]))
+            for r in rs:
+                rr, cc = _circle_coords(cy, cx, int(r), glob_ov.shape[:2])
+                glob_ov[rr, cc] = [255, 60, 60]
+            cv2.circle(glob_ov, (cx, cy), 5, SOMA_GREEN, -1)
+            cv2.putText(glob_ov, str(idx), (cx+10, cy+10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, SOMA_GREEN, 2, cv2.LINE_AA)
 
-    fig_g, ax_g = plt.subplots(figsize=(12, 10))
-    ax_g.imshow(glob_ov)
-    ax_g.axis("off")
-    ax_g.set_title("Global Skeleton Map with Sholl Rings", fontsize=12, fontweight="bold")
-    st.pyplot(fig_g);  plt.close(fig_g)
+        fig_g, ax_g = plt.subplots(figsize=(10, 5))
+        ax_g.imshow(glob_ov);  ax_g.axis("off")
+        ax_g.set_title("Global Skeleton Map with Sholl Rings", fontsize=11, fontweight="bold")
+        fig_g.tight_layout(pad=0.5)
+        st.pyplot(fig_g);  plt.close(fig_g)
 
     # ── Per-cell analysis loop ────────────────────────────────
     all_cells_sholl_data = []
@@ -376,11 +376,9 @@ elif st.session_state.ui_mode == "qc":
 
     for idx, (raw_x, raw_y) in enumerate(st.session_state.soma_points, start=1):
         st.divider()
-        st.subheader(f"🧠 Analysis for Cell {idx}")
 
         comp_mask, (corr_x, corr_y) = get_connected_component(skeleton, (raw_y, raw_x))
         if comp_mask is None:
-            # --- FIX 6.3: informative warning ---
             st.warning(f"Cell {idx}: No skeleton found near click — consider re-clicking closer to a branch.")
             continue
 
@@ -404,7 +402,19 @@ elif st.session_state.ui_mode == "qc":
             sri                         = schoenen_ramification_index(intersections, radii, (corr_x, corr_y), comp_mask)
             soma_area, soma_circ        = soma_shape_metrics(binary, (corr_x, corr_y))
 
-        # --- FIX 5.2: metric cards with biological reference flags ---
+        # ── Cell header with styled banner ────────────────────
+        st.markdown(
+            f"<div style='background:linear-gradient(90deg,#1a1a2e,#16213e,#0f3460);"
+            f"padding:0.6rem 1.2rem;border-radius:8px;margin-bottom:0.8rem'>"
+            f"<span style='color:#e0e0e0;font-size:1.15rem;font-weight:600'>"
+            f"🧠 Cell {idx}</span>"
+            f"<span style='color:#7ee8fa;font-size:0.85rem;margin-left:1.2rem'>"
+            f"Soma at ({corr_x}, {corr_y})"
+            f"</span></div>",
+            unsafe_allow_html=True,
+        )
+
+        # ── Metric cards with biological reference flags ──────
         m1, m2, m3, m4, m5, m6 = st.columns(6)
         _metric_badge(m1, "Fractal Dim",  fd,        "{:.3f}", "fd")
         _metric_badge(m2, "Lacunarity",   lac,       "{:.2f}", "lac")
@@ -413,7 +423,7 @@ elif st.session_state.ui_mode == "qc":
         _metric_badge(m5, "Soma Area",    soma_area, "{:.0f}", "soma_area", " px")
         _metric_badge(m6, "Circularity",  soma_circ, "{:.2f}", "soma_circ")
 
-        # --- FIX 3: Full 6-panel QC dashboard from morphology_features ---
+        # ── 5-panel QC dashboard (no redundant Panel F) ───────
         metrics_dict = dict(
             FD=fd, Lac=lac, Betw=betw, Clos=clos,
             SRI=sri, Area=soma_area, Circ=soma_circ,
@@ -427,10 +437,9 @@ elif st.session_state.ui_mode == "qc":
                 streamlit_mode=True
             )
         st.pyplot(fig_qc)
-        # --- FIX 7.3: close by reference, not plt.close("all") ---
         plt.close(fig_qc)
 
-        # Accept / Reject
+        # ── Accept / Reject toggle ────────────────────────────
         accepted = st.checkbox(
             f"✅  Include Cell {idx} in Global Report",
             value=(idx not in st.session_state.rejected_cells),
@@ -442,7 +451,6 @@ elif st.session_state.ui_mode == "qc":
                 all_cells_sholl_data.append({
                     "Radius (px)": r, "Intersections": inters, "Cell": f"Cell {idx}",
                 })
-            # --- FIX 4.1: collect summary row for table ---
             summary_rows.append({
                 "Cell": f"Cell {idx}",
                 "Fractal Dim": round(fd, 4)        if not np.isnan(fd)        else float("nan"),
