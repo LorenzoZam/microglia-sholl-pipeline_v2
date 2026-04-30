@@ -26,7 +26,7 @@ from morphology_features import (
 # ─────────────────────────────────────────────────────────────
 # CONFIG CONSTANTS  (7.2)
 # ─────────────────────────────────────────────────────────────
-DISPLAY_WIDTH_PX   = 800
+DISPLAY_WIDTH_PX   = 550
 DEFAULT_MAX_RADIUS = 500
 CROP_MARGIN_FACTOR = 1.3
 DEFAULT_UM_PER_PX  = 0.56
@@ -290,10 +290,10 @@ if st.session_state.ui_mode == "selecting":
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Raw Fluorescent Image**")
-            val1 = streamlit_image_coordinates(ov_left_small,  key="img1", use_column_width=True)
+            val1 = streamlit_image_coordinates(ov_left_small,  key="img1")
         with col2:
             st.markdown("**Skeleton Tracing**")
-            val2 = streamlit_image_coordinates(ov_right_small, key="img2", use_column_width=True)
+            val2 = streamlit_image_coordinates(ov_right_small, key="img2")
 
     # --- FIX 6.2: dedup by (x,y) tuple, not full dict ---
     if val1 is not None:
