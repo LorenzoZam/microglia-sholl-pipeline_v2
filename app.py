@@ -26,7 +26,7 @@ from morphology_features import (
 # ─────────────────────────────────────────────────────────────
 # CONFIG CONSTANTS  (7.2)
 # ─────────────────────────────────────────────────────────────
-DISPLAY_WIDTH_PX   = 700
+DISPLAY_WIDTH_PX   = 350
 DEFAULT_MAX_RADIUS = 500
 CROP_MARGIN_FACTOR = 1.3
 DEFAULT_UM_PER_PX  = 0.56
@@ -202,9 +202,9 @@ with tab_sample:
 
         chosen = st.session_state.chosen_sample or samples[0]
         img_color = cv2.imread(str(SAMPLE_DIR / chosen), cv2.IMREAD_COLOR)
-        if img_color is not None:
+        img_gray  = cv2.imread(str(SAMPLE_DIR / chosen), cv2.IMREAD_GRAYSCALE)
+        if img_color is not None and img_gray is not None:
             img_color = cv2.cvtColor(img_color, cv2.COLOR_BGR2RGB)
-            img_gray = cv2.cvtColor(img_color, cv2.COLOR_RGB2GRAY)
             st.success(f"✅ Loaded: **{chosen}**  ({img_gray.shape[1]} × {img_gray.shape[0]} px)")
         else:
             img_gray = None
@@ -216,11 +216,11 @@ with tab_upload:
     if uploaded_file is not None:
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         img_color  = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        if img_color is None:
+        img_gray   = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
+        if img_color is None or img_gray is None:
             st.error("Error loading image.")
             st.stop()
         img_color = cv2.cvtColor(img_color, cv2.COLOR_BGR2RGB)
-        img_gray  = cv2.cvtColor(img_color, cv2.COLOR_RGB2GRAY)
         if st.session_state.get("last_uploaded") != uploaded_file.name:
             for _k, _v in _defaults.items():
                 st.session_state[_k] = _v if not isinstance(_v, (list, set, dict)) else type(_v)()
@@ -290,10 +290,10 @@ if st.session_state.ui_mode == "selecting":
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**Raw Fluorescent Image**")
-            val1 = streamlit_image_coordinates(ov_left_small,  key="img1", use_column_width="auto")
+            val1 = streamlit_image_coordinates(ov_left_small,  key="img1")
         with col2:
             st.markdown("**Skeleton Tracing**")
-            val2 = streamlit_image_coordinates(ov_right_small, key="img2", use_column_width="auto")
+            val2 = streamlit_image_coordinates(ov_right_small, key="img2")
 
     # --- FIX 6.2: dedup by (x,y) tuple, not full dict ---
     if val1 is not None:
