@@ -187,9 +187,10 @@ with tab_sample:
         thumb_cols = st.columns(min(len(samples), 5))
         for col, name in zip(thumb_cols, samples):
             path  = SAMPLE_DIR / name
-            thumb = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+            thumb = cv2.imread(str(path), cv2.IMREAD_COLOR)
             if thumb is not None:
-                h, w  = thumb.shape
+                thumb = cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB)
+                h, w  = thumb.shape[:2]
                 scale = 150 / max(h, w)
                 thumb_small = cv2.resize(thumb, (int(w * scale), int(h * scale)))
                 col.image(thumb_small, caption=name, use_container_width=True)
@@ -200,9 +201,13 @@ with tab_sample:
                     st.rerun()
 
         chosen = st.session_state.chosen_sample or samples[0]
-        img_gray = cv2.imread(str(SAMPLE_DIR / chosen), cv2.IMREAD_GRAYSCALE)
-        if img_gray is not None:
+        img_color = cv2.imread(str(SAMPLE_DIR / chosen), cv2.IMREAD_COLOR)
+        if img_color is not None:
+            img_color = cv2.cvtColor(img_color, cv2.COLOR_BGR2RGB)
+            img_gray = cv2.cvtColor(img_color, cv2.COLOR_RGB2GRAY)
             st.success(f"✅ Loaded: **{chosen}**  ({img_gray.shape[1]} × {img_gray.shape[0]} px)")
+        else:
+            img_gray = None
 
 with tab_upload:
     uploaded_file = st.file_uploader(
@@ -210,10 +215,12 @@ with tab_upload:
     )
     if uploaded_file is not None:
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        img_gray   = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
-        if img_gray is None:
+        img_color  = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        if img_color is None:
             st.error("Error loading image.")
             st.stop()
+        img_color = cv2.cvtColor(img_color, cv2.COLOR_BGR2RGB)
+        img_gray  = cv2.cvtColor(img_color, cv2.COLOR_RGB2GRAY)
         if st.session_state.get("last_uploaded") != uploaded_file.name:
             for _k, _v in _defaults.items():
                 st.session_state[_k] = _v if not isinstance(_v, (list, set, dict)) else type(_v)()
@@ -262,7 +269,7 @@ if st.session_state.ui_mode == "selecting":
         )
 
     # Build overlays
-    ov_left  = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2RGB)
+    ov_left  = img_color.copy()  # Show the raw fluorescent image
     ov_right = np.zeros((*processed_image.shape, 3), dtype=np.uint8)
     ov_right[skeleton > 0] = [255, 255, 255]
 
@@ -282,11 +289,11 @@ if st.session_state.ui_mode == "selecting":
     with img_container:
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown("**Denoised Image (patch-wise CLAHE)**")
-            val1 = streamlit_image_coordinates(ov_left_small,  key="img1")
+            st.markdown("**Raw Fluorescent Image**")
+            val1 = streamlit_image_coordinates(ov_left_small,  key="img1", use_column_width="auto")
         with col2:
             st.markdown("**Skeleton Tracing**")
-            val2 = streamlit_image_coordinates(ov_right_small, key="img2")
+            val2 = streamlit_image_coordinates(ov_right_small, key="img2", use_column_width="auto")
 
     # --- FIX 6.2: dedup by (x,y) tuple, not full dict ---
     if val1 is not None:
