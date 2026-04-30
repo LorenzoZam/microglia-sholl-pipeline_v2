@@ -88,6 +88,7 @@ if not BATCH_TEMP_DIR.exists():
 # SESSION STATE
 # ─────────────────────────────────────────────────────────────
 _defaults = dict(
+    workflow_mode="Single Image",
     experiment_queue=[], 
     current_queue_idx=0,
     master_sholl_data=[], 
@@ -184,23 +185,46 @@ def _list_samples():
 # STEP 1: QUEUE SETUP
 # ─────────────────────────────────────────────────────────────
 if st.session_state.ui_mode == "queue_setup":
-    st.markdown("### Step 1: Experiment Builder")
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        st.markdown("#### Define Experimental Groups")
-        new_group = st.text_input("New Group Name", "")
-        if st.button("➕ Add Group") and new_group and new_group not in st.session_state.available_groups:
-            st.session_state.available_groups.append(new_group)
-            st.rerun()
-        st.write("**Active Groups:**")
-        for g in st.session_state.available_groups:
-            st.markdown(f"- `{g}`")
-            
-        st.markdown("---")
-        target_group = st.selectbox("Assign images to group:", st.session_state.available_groups)
+    w1, w2, w3 = st.columns([1, 2, 1])
+    workflow_choice = w2.radio(
+        "🧠 Select Analysis Mode:", 
+        options=["Single Image (Quick)", "Batch Mode (Experiment Groups)"], 
+        index=0 if st.session_state.get("workflow_mode", "Single Image") == "Single Image" else 1,
+        horizontal=True
+    )
     
-    with col2:
-        st.markdown("#### Add Images to Queue")
+    new_mode = "Single Image" if "Single Image" in workflow_choice else "Batch Mode"
+    if new_mode != st.session_state.workflow_mode:
+        st.session_state.workflow_mode = new_mode
+        st.session_state.experiment_queue = []
+        st.rerun()
+
+    st.markdown("---")
+
+    if st.session_state.workflow_mode == "Batch Mode":
+        st.markdown("### Step 1: Experiment Builder")
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.markdown("#### Define Experimental Groups")
+            new_group = st.text_input("New Group Name", "")
+            if st.button("➕ Add Group") and new_group and new_group not in st.session_state.available_groups:
+                st.session_state.available_groups.append(new_group)
+                st.rerun()
+            st.write("**Active Groups:**")
+            for g in st.session_state.available_groups:
+                st.markdown(f"- `{g}`")
+            st.markdown("---")
+            target_group = st.selectbox("Assign images to group:", st.session_state.available_groups)
+        img_col = col2
+    else:
+        st.markdown("### Step 1: Select an Image")
+        target_group = "Single_Run"
+        img_col = st.container()
+
+    with img_col:
+        if st.session_state.workflow_mode == "Batch Mode":
+            st.markdown("#### Add Images to Queue")
+            
         tab_sample, tab_upload = st.tabs(["🖼️ Try a Sample Image", "📤 Upload Your Own"])
         
         with tab_sample:
@@ -208,47 +232,76 @@ if st.session_state.ui_mode == "queue_setup":
             if not samples:
                 st.info("No sample images found.")
             else:
-                selected_sample = st.selectbox("Select Sample", samples)
-                if st.button("➕ Add Sample to Queue"):
-                    st.session_state.experiment_queue.append({
-                        "type": "sample",
-                        "filename": selected_sample,
-                        "path": str(SAMPLE_DIR / selected_sample),
-                        "group": target_group
-                    })
-                    st.success(f"Added {selected_sample} to {target_group}")
+                if st.session_state.workflow_mode == "Single Image":
+                    st.markdown("Select one of the bundled microscopy images to try the pipeline instantly:")
+                
+                thumb_cols = st.columns(min(len(samples), 5))
+                for col, name in zip(thumb_cols, samples):
+                    path = SAMPLE_DIR / name
+                    thumb = cv2.imread(str(path), cv2.IMREAD_COLOR)
+                    if thumb is not None:
+                        thumb = cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB)
+                        h, w = thumb.shape[:2]
+                        scale = 150 / max(h, w)
+                        thumb_small = cv2.resize(thumb, (int(w * scale), int(h * scale)))
+                        col.image(thumb_small, caption=name, use_container_width=True)
+                        
+                        btn_label = "Use" if st.session_state.workflow_mode == "Single Image" else "➕ Add"
+                        if col.button(btn_label, key=f"btn_{name}"):
+                            st.session_state.experiment_queue.append({
+                                "type": "sample",
+                                "filename": name,
+                                "path": str(path),
+                                "group": target_group
+                            })
+                            if st.session_state.workflow_mode == "Single Image":
+                                st.session_state.ui_mode = "selecting"
+                                st.session_state.current_queue_idx = 0
+                            else:
+                                st.success(f"Added {name} to {target_group}")
+                            st.rerun()
                 
         with tab_upload:
-            uploaded_files = st.file_uploader("Upload Images", type=["tif", "tiff", "png", "jpg", "jpeg"], accept_multiple_files=True)
-            if st.button("➕ Add Uploads to Queue") and uploaded_files:
-                for f in uploaded_files:
-                    path = BATCH_TEMP_DIR / f.name
-                    with open(path, "wb") as out_f:
-                        out_f.write(f.read())
-                    st.session_state.experiment_queue.append({
-                        "type": "upload",
-                        "filename": f.name,
-                        "path": str(path),
-                        "group": target_group
-                    })
-                st.success(f"Added {len(uploaded_files)} images to {target_group}")
-                st.rerun()
+            is_multiple = (st.session_state.workflow_mode == "Batch Mode")
+            uploaded_files = st.file_uploader("Upload Images", type=["tif", "tiff", "png", "jpg", "jpeg"], accept_multiple_files=is_multiple)
+            if uploaded_files:
+                if not is_multiple:
+                    uploaded_files = [uploaded_files]
+                btn_label = "Start Analysis" if st.session_state.workflow_mode == "Single Image" else "➕ Add Uploads to Queue"
+                if st.button(btn_label, type="primary"):
+                    for f in uploaded_files:
+                        path = BATCH_TEMP_DIR / f.name
+                        with open(path, "wb") as out_f:
+                            out_f.write(f.read())
+                        st.session_state.experiment_queue.append({
+                            "type": "upload",
+                            "filename": f.name,
+                            "path": str(path),
+                            "group": target_group
+                        })
+                    if st.session_state.workflow_mode == "Single Image":
+                        st.session_state.ui_mode = "selecting"
+                        st.session_state.current_queue_idx = 0
+                    else:
+                        st.success(f"Added {len(uploaded_files)} images to {target_group}")
+                    st.rerun()
                 
-    st.divider()
-    st.markdown("#### Current Queue Workload")
-    if not st.session_state.experiment_queue:
-        st.info("Queue is empty. Add images above.")
-    else:
-        df_queue = pd.DataFrame(st.session_state.experiment_queue)[["filename", "group", "type"]]
-        st.dataframe(df_queue, use_container_width=True)
-        rc1, rc2 = st.columns([1, 4])
-        if rc1.button("🗑️ Clear Queue"):
-            st.session_state.experiment_queue = []
-            st.rerun()
-        if rc2.button("🚀 Start Batch Analysis", type="primary"):
-            st.session_state.ui_mode = "selecting"
-            st.session_state.current_queue_idx = 0
-            st.rerun()
+    if st.session_state.workflow_mode == "Batch Mode":
+        st.divider()
+        st.markdown("#### Current Queue Workload")
+        if not st.session_state.experiment_queue:
+            st.info("Queue is empty. Add images above.")
+        else:
+            df_queue = pd.DataFrame(st.session_state.experiment_queue)[["filename", "group", "type"]]
+            st.dataframe(df_queue, use_container_width=True)
+            rc1, rc2 = st.columns([1, 4])
+            if rc1.button("🗑️ Clear Queue"):
+                st.session_state.experiment_queue = []
+                st.rerun()
+            if rc2.button("🚀 Start Batch Analysis", type="primary"):
+                st.session_state.ui_mode = "selecting"
+                st.session_state.current_queue_idx = 0
+                st.rerun()
     st.stop()
 
 
@@ -459,7 +512,8 @@ elif st.session_state.ui_mode == "qc":
             st.session_state.rejected_cells.add(idx)
 
     st.divider()
-    if st.button("💾 Save Cells & Next Image", type="primary"):
+    btn_lbl = "💾 Finish and View Report" if st.session_state.get("workflow_mode") == "Single Image" else "💾 Save Cells & Next Image"
+    if st.button(btn_lbl, type="primary"):
         st.session_state.master_sholl_data.extend(local_sholl_data)
         st.session_state.master_metrics.extend(local_summary_rows)
         
