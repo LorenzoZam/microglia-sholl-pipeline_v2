@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 import os
+import shutil
 from pathlib import Path
 from streamlit_image_coordinates import streamlit_image_coordinates
 
@@ -24,7 +25,7 @@ from morphology_features import (
 )
 
 # ─────────────────────────────────────────────────────────────
-# CONFIG CONSTANTS  (7.2)
+# CONFIG CONSTANTS
 # ─────────────────────────────────────────────────────────────
 DISPLAY_WIDTH_PX   = 550
 DEFAULT_MAX_RADIUS = 500
@@ -32,7 +33,7 @@ CROP_MARGIN_FACTOR = 1.3
 DEFAULT_UM_PER_PX  = 0.56
 SOMA_GREEN         = (50, 205, 50)
 
-# Biological reference ranges for flag coloring  (5.2)
+# Biological reference ranges for flag coloring
 BIO_RANGES = {
     "fd":        (0.7,  1.8),
     "lac":       (1.0,  10.0),
@@ -48,7 +49,7 @@ def _flag_color(value, lo, hi):
     return "green" if lo <= value <= hi else "darkorange"
 
 def _metric_badge(col, label, value, fmt, key, unit=""):
-    """Render st.metric with a colored caption flag.  (5.2)"""
+    """Render st.metric with a colored caption flag."""
     lo, hi = BIO_RANGES.get(key, (None, None))
     disp = (fmt.format(value) + unit) if not np.isnan(value) else "N/A"
     col.metric(label, disp)
@@ -61,28 +62,41 @@ def _metric_badge(col, label, value, fmt, key, unit=""):
         )
 
 # ─────────────────────────────────────────────────────────────
-# PAGE CONFIG & HEADER  (5.1)
+# PAGE CONFIG & HEADER
 # ─────────────────────────────────────────────────────────────
-st.set_page_config(page_title="🔬 MicroSholl", layout="wide", page_icon="🧠")
+st.set_page_config(page_title="🔬 MicroSholl Batch", layout="wide", page_icon="🧠")
 sns.set_theme(style="ticks", context="talk", palette="colorblind")
 
 st.markdown("""
 <div style="background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);
      padding:1.4rem 2rem;border-radius:12px;margin-bottom:1.2rem;">
-  <h1 style="color:#7ee8fa;margin:0;font-size:2.1rem;">🧠 MicroSholl</h1>
+  <h1 style="color:#7ee8fa;margin:0;font-size:2.1rem;">🧠 MicroSholl Batch</h1>
   <p style="color:#cfd9df;margin:0.3rem 0 0;font-size:1rem;">
-    Advanced Microglia Morphology Analysis &nbsp;·&nbsp; v2.0
+    High-Throughput Microglia Morphology Analysis &nbsp;·&nbsp; v2.0
   </p>
 </div>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────
+# TEMP BATCH DIR
+# ─────────────────────────────────────────────────────────────
+BATCH_TEMP_DIR = Path(__file__).parent / ".tmp_batch"
+if not BATCH_TEMP_DIR.exists():
+    BATCH_TEMP_DIR.mkdir(exist_ok=True)
+
+# ─────────────────────────────────────────────────────────────
 # SESSION STATE
 # ─────────────────────────────────────────────────────────────
 _defaults = dict(
-    soma_points=[], ui_mode="selecting",
+    experiment_queue=[], 
+    current_queue_idx=0,
+    master_sholl_data=[], 
+    master_metrics=[],
+    available_groups=["Control", "Treatment"],
+    # Per-image state
+    soma_points=[], ui_mode="queue_setup",
     last_click1=None, last_click2=None,
-    rejected_cells=set(), chosen_sample=None,
+    rejected_cells=set(),
     step_size=4, um_per_px=DEFAULT_UM_PER_PX,
     confirm_restart=False,
 )
@@ -98,7 +112,6 @@ def clear_all():
     st.session_state.soma_points = []
 
 def accept_all(step_size_val, um_per_px_val):
-    """Persist user parameters before switching to QC.  (1.2, 2.2)"""
     st.session_state.step_size = step_size_val
     st.session_state.um_per_px = um_per_px_val
     st.session_state.ui_mode   = "qc"
@@ -106,19 +119,20 @@ def accept_all(step_size_val, um_per_px_val):
 def _do_restart():
     for k, v in _defaults.items():
         st.session_state[k] = v if not isinstance(v, (list, set, dict)) else type(v)()
-    st.session_state.confirm_restart = False
+    if BATCH_TEMP_DIR.exists():
+        shutil.rmtree(BATCH_TEMP_DIR)
+        BATCH_TEMP_DIR.mkdir(exist_ok=True)
 
 # ─────────────────────────────────────────────────────────────
-# PROGRESS INDICATOR  (1.1)
+# PROGRESS INDICATOR
 # ─────────────────────────────────────────────────────────────
-_step_labels = ["① Load Image", "② Select Somas", "③ QC & Analysis", "④ Export"]
+_step_labels = ["① Setup Queue", "② Select Somas", "③ Cell QC", "④ Global Report"]
 
-# Determine current step: "selecting" without an image loaded = still on Step 1
-_has_image = (st.session_state.chosen_sample is not None
-              or st.session_state.get("last_uploaded") is not None)
-if st.session_state.ui_mode == "qc":
+if st.session_state.ui_mode == "export":
+    _step_idx = 3
+elif st.session_state.ui_mode == "qc":
     _step_idx = 2
-elif st.session_state.ui_mode == "selecting" and _has_image:
+elif st.session_state.ui_mode == "selecting":
     _step_idx = 1
 else:
     _step_idx = 0
@@ -139,7 +153,7 @@ st.markdown(
 )
 
 # ─────────────────────────────────────────────────────────────
-# CORE ALGORITHM (cached)  (2.1 — accepts tmpl/search window)
+# CORE ALGORITHM (cached)
 # ─────────────────────────────────────────────────────────────
 @st.cache_data
 def run_scientific_skeletonization(image, h_val, tmpl_win=7, search_win=21):
@@ -160,90 +174,111 @@ def run_scientific_skeletonization(image, h_val, tmpl_win=7, search_win=21):
     skeleton        = remove_isolated_fibers(bridge_refined)
     return processed_image, binary, skeleton
 
-# ─────────────────────────────────────────────────────────────
-# SAMPLE IMAGE HELPERS
-# ─────────────────────────────────────────────────────────────
 SAMPLE_DIR = Path(__file__).parent / "sample_images"
 
 def _list_samples():
-    if not SAMPLE_DIR.exists():
-        return []
-    exts = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
-    return sorted(f.name for f in SAMPLE_DIR.iterdir() if f.suffix.lower() in exts)
+    if not SAMPLE_DIR.exists(): return []
+    return sorted(f.name for f in SAMPLE_DIR.iterdir() if f.suffix.lower() in {".tif", ".tiff", ".png", ".jpg", ".jpeg"})
 
 # ─────────────────────────────────────────────────────────────
-# IMAGE SOURCE — two tabs
+# STEP 1: QUEUE SETUP
 # ─────────────────────────────────────────────────────────────
-tab_sample, tab_upload = st.tabs(["🖼️ Try a Sample Image", "📤 Upload Your Own"])
-
-img_gray = None
-
-with tab_sample:
-    samples = _list_samples()
-    if not samples:
-        st.info("No sample images found. Add `.tif` / `.png` files to the `sample_images/` folder in the repo.")
+if st.session_state.ui_mode == "queue_setup":
+    st.markdown("### Step 1: Experiment Builder")
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        st.markdown("#### Define Experimental Groups")
+        new_group = st.text_input("New Group Name", "")
+        if st.button("➕ Add Group") and new_group and new_group not in st.session_state.available_groups:
+            st.session_state.available_groups.append(new_group)
+            st.rerun()
+        st.write("**Active Groups:**")
+        for g in st.session_state.available_groups:
+            st.markdown(f"- `{g}`")
+            
+        st.markdown("---")
+        target_group = st.selectbox("Assign images to group:", st.session_state.available_groups)
+    
+    with col2:
+        st.markdown("#### Add Images to Queue")
+        tab_sample, tab_upload = st.tabs(["🖼️ Try a Sample Image", "📤 Upload Your Own"])
+        
+        with tab_sample:
+            samples = _list_samples()
+            if not samples:
+                st.info("No sample images found.")
+            else:
+                selected_sample = st.selectbox("Select Sample", samples)
+                if st.button("➕ Add Sample to Queue"):
+                    st.session_state.experiment_queue.append({
+                        "type": "sample",
+                        "filename": selected_sample,
+                        "path": str(SAMPLE_DIR / selected_sample),
+                        "group": target_group
+                    })
+                    st.success(f"Added {selected_sample} to {target_group}")
+                
+        with tab_upload:
+            uploaded_files = st.file_uploader("Upload Images", type=["tif", "tiff", "png", "jpg", "jpeg"], accept_multiple_files=True)
+            if st.button("➕ Add Uploads to Queue") and uploaded_files:
+                for f in uploaded_files:
+                    path = BATCH_TEMP_DIR / f.name
+                    with open(path, "wb") as out_f:
+                        out_f.write(f.read())
+                    st.session_state.experiment_queue.append({
+                        "type": "upload",
+                        "filename": f.name,
+                        "path": str(path),
+                        "group": target_group
+                    })
+                st.success(f"Added {len(uploaded_files)} images to {target_group}")
+                st.rerun()
+                
+    st.divider()
+    st.markdown("#### Current Queue Workload")
+    if not st.session_state.experiment_queue:
+        st.info("Queue is empty. Add images above.")
     else:
-        st.markdown("Select one of the bundled microscopy images to try the pipeline instantly:")
-        thumb_cols = st.columns(min(len(samples), 5))
-        for col, name in zip(thumb_cols, samples):
-            path  = SAMPLE_DIR / name
-            thumb = cv2.imread(str(path), cv2.IMREAD_COLOR)
-            if thumb is not None:
-                thumb = cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB)
-                h, w  = thumb.shape[:2]
-                scale = 150 / max(h, w)
-                thumb_small = cv2.resize(thumb, (int(w * scale), int(h * scale)))
-                col.image(thumb_small, caption=name, use_container_width=True)
-                if col.button("Use", key=f"btn_{name}"):
-                    for _k, _v in _defaults.items():
-                        st.session_state[_k] = _v if not isinstance(_v, (list, set, dict)) else type(_v)()
-                    st.session_state.chosen_sample = name
-                    st.rerun()
-
-        chosen = st.session_state.chosen_sample or samples[0]
-        img_color = cv2.imread(str(SAMPLE_DIR / chosen), cv2.IMREAD_COLOR)
-        img_gray  = cv2.imread(str(SAMPLE_DIR / chosen), cv2.IMREAD_GRAYSCALE)
-        if img_color is not None and img_gray is not None:
-            img_color = cv2.cvtColor(img_color, cv2.COLOR_BGR2RGB)
-            st.success(f"✅ Loaded: **{chosen}**  ({img_gray.shape[1]} × {img_gray.shape[0]} px)")
-        else:
-            img_gray = None
-
-with tab_upload:
-    uploaded_file = st.file_uploader(
-        "Upload Image (TIFF/PNG/JPG)", type=["tif", "tiff", "png", "jpg", "jpeg"]
-    )
-    if uploaded_file is not None:
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        img_color  = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        img_gray   = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
-        if img_color is None or img_gray is None:
-            st.error("Error loading image.")
-            st.stop()
-        img_color = cv2.cvtColor(img_color, cv2.COLOR_BGR2RGB)
-        if st.session_state.get("last_uploaded") != uploaded_file.name:
-            for _k, _v in _defaults.items():
-                st.session_state[_k] = _v if not isinstance(_v, (list, set, dict)) else type(_v)()
-            st.session_state["last_uploaded"] = uploaded_file.name
-
-# Guard: nothing selected yet  (6.1)
-if img_gray is None:
-    st.info("👆 Please select a sample image or upload your own to begin.")
+        df_queue = pd.DataFrame(st.session_state.experiment_queue)[["filename", "group", "type"]]
+        st.dataframe(df_queue, use_container_width=True)
+        rc1, rc2 = st.columns([1, 4])
+        if rc1.button("🗑️ Clear Queue"):
+            st.session_state.experiment_queue = []
+            st.rerun()
+        if rc2.button("🚀 Start Batch Analysis", type="primary"):
+            st.session_state.ui_mode = "selecting"
+            st.session_state.current_queue_idx = 0
+            st.rerun()
     st.stop()
+
+
+# ─────────────────────────────────────────────────────────────
+# LOAD CURRENT IMAGE (For Selecting and QC steps)
+# ─────────────────────────────────────────────────────────────
+if st.session_state.ui_mode in ["selecting", "qc"]:
+    if st.session_state.current_queue_idx >= len(st.session_state.experiment_queue):
+        st.session_state.ui_mode = "export"
+        st.rerun()
+        
+    current_item = st.session_state.experiment_queue[st.session_state.current_queue_idx]
+    img_color = cv2.imread(current_item["path"], cv2.IMREAD_COLOR)
+    img_gray  = cv2.imread(current_item["path"], cv2.IMREAD_GRAYSCALE)
+    if img_color is None or img_gray is None:
+        st.error(f"Failed to load {current_item['filename']}.")
+        st.stop()
+    img_color = cv2.cvtColor(img_color, cv2.COLOR_BGR2RGB)
+    
+    st.markdown(f"### Image {st.session_state.current_queue_idx + 1} of {len(st.session_state.experiment_queue)}")
+    st.markdown(f"**Filename:** `{current_item['filename']}` &nbsp;|&nbsp; **Group:** `{current_item['group']}`")
 
 # ─────────────────────────────────────────────────────────────
 # STEP 2 — INTERACTIVE CELL DETECTION
 # ─────────────────────────────────────────────────────────────
 if st.session_state.ui_mode == "selecting":
-    st.markdown("### Step 2: Interactive Cell Detection")
-    st.caption(
-        "👆 Click on any **cell body (soma)** in either image below to register it. "
-        "The skeleton panel (right) helps you verify the tracing quality. "
-        "You can accumulate multiple cells."
-    )
-
-    img_container  = st.container()   # images rendered here
-    ctrl_container = st.container()   # controls rendered visually below
+    st.caption("👆 Click on somas in either image. Accumulate multiple cells.")
+    
+    img_container  = st.container()
+    ctrl_container = st.container()
 
     with ctrl_container:
         st.markdown("---")
@@ -251,35 +286,25 @@ if st.session_state.ui_mode == "selecting":
         c1, c2, c3 = st.columns(3)
         h_val       = c1.slider("NLM Parameter (h)", min_value=1, max_value=20, value=9)
         step_size_w = int(c2.number_input("Sholl Step Size (px)", min_value=1, max_value=50, value=st.session_state.step_size))
-        um_per_px_w = float(c3.number_input(
-            "Pixel size (µm/px)", min_value=0.01, max_value=10.0,
-            value=st.session_state.um_per_px, step=0.01,
-            help="Microscope calibration factor — used for µm axis in the final plot."
-        ))
+        um_per_px_w = float(c3.number_input("Pixel size (µm/px)", min_value=0.01, max_value=10.0, value=st.session_state.um_per_px, step=0.01))
 
         with st.expander("⚙️ Advanced Pipeline Settings", expanded=False):
             adv1, adv2 = st.columns(2)
             tmpl_win   = adv1.slider("NLM Template Window (px)", 5, 15, 7, step=2)
             search_win = adv2.slider("NLM Search Window (px)", 11, 31, 21, step=2)
-            st.caption("ℹ️ Changing these clears the processing cache.")
 
     with st.spinner("Applying rigorous morphological filters..."):
-        processed_image, binary, skeleton = run_scientific_skeletonization(
-            img_gray, h_val, tmpl_win, search_win
-        )
+        processed_image, binary, skeleton = run_scientific_skeletonization(img_gray, h_val, tmpl_win, search_win)
 
-    # Build overlays
-    ov_left  = img_color.copy()  # Show the raw fluorescent image
+    ov_left  = img_color.copy()
     ov_right = np.zeros((*processed_image.shape, 3), dtype=np.uint8)
     ov_right[skeleton > 0] = [255, 255, 255]
 
     for idx, (cx, cy) in enumerate(st.session_state.soma_points, start=1):
         cv2.circle(ov_left,  (int(cx), int(cy)), 5, SOMA_GREEN, -1)
         cv2.circle(ov_right, (int(cx), int(cy)), 5, SOMA_GREEN, -1)
-        cv2.putText(ov_left,  str(idx), (int(cx)+10, int(cy)+10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, SOMA_GREEN, 2, cv2.LINE_AA)
-        cv2.putText(ov_right, str(idx), (int(cx)+10, int(cy)+10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, SOMA_GREEN, 2, cv2.LINE_AA)
+        cv2.putText(ov_left,  str(idx), (int(cx)+10, int(cy)+10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, SOMA_GREEN, 2, cv2.LINE_AA)
+        cv2.putText(ov_right, str(idx), (int(cx)+10, int(cy)+10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, SOMA_GREEN, 2, cv2.LINE_AA)
 
     scale_ratio    = min(1.0, DISPLAY_WIDTH_PX / float(ov_left.shape[1]))
     new_dim        = (int(ov_left.shape[1] * scale_ratio), int(ov_left.shape[0] * scale_ratio))
@@ -295,90 +320,67 @@ if st.session_state.ui_mode == "selecting":
             st.markdown("**Skeleton Tracing**")
             val2 = streamlit_image_coordinates(ov_right_small, key="img2")
 
-    # --- FIX 6.2: dedup by (x,y) tuple, not full dict ---
     if val1 is not None:
         coord1 = (val1["x"], val1["y"])
         if coord1 != st.session_state.last_click1:
-            st.session_state.soma_points.append(
-                (int(val1["x"] / scale_ratio), int(val1["y"] / scale_ratio)))
+            st.session_state.soma_points.append((int(val1["x"] / scale_ratio), int(val1["y"] / scale_ratio)))
             st.session_state.last_click1 = coord1
             st.rerun()
     if val2 is not None:
         coord2 = (val2["x"], val2["y"])
         if coord2 != st.session_state.last_click2:
-            st.session_state.soma_points.append(
-                (int(val2["x"] / scale_ratio), int(val2["y"] / scale_ratio)))
+            st.session_state.soma_points.append((int(val2["x"] / scale_ratio), int(val2["y"] / scale_ratio)))
             st.session_state.last_click2 = coord2
             st.rerun()
 
     b1, b2, b3 = st.columns([1, 1, 2])
     b1.button("Undo Last ↺", on_click=undo_last)
     b2.button("Clear All ✗",  on_click=clear_all)
-    b3.button(
-        f"Accept Somas ({len(st.session_state.soma_points)}) & Continue ✓",
-        on_click=accept_all, args=(step_size_w, um_per_px_w), type="primary",
-    )
+    if not st.session_state.soma_points:
+        if b3.button("Skip Image ⏭️"):
+            st.session_state.current_queue_idx += 1
+            st.session_state.soma_points = []
+            st.session_state.rejected_cells = set()
+            st.rerun()
+    else:
+        b3.button(f"Process Somas ({len(st.session_state.soma_points)}) ✓", on_click=accept_all, args=(step_size_w, um_per_px_w), type="primary")
 
 # ─────────────────────────────────────────────────────────────
 # STEP 3 — QC DASHBOARD
 # ─────────────────────────────────────────────────────────────
 elif st.session_state.ui_mode == "qc":
-    # --- FIX 1.2: Read persisted step_size (not hardcoded 4) ---
     step_size   = st.session_state.step_size
     conv_factor = st.session_state.um_per_px
 
     st.markdown("### Step 3: Quality Control Dashboard")
 
-    # --- FIX 1.3: confirmation before back ---
-    if st.session_state.confirm_restart:
-        st.warning("⚠️ This will clear all QC data. Are you sure?")
-        rb1, rb2 = st.columns(2)
-        if rb1.button("Yes, restart", type="primary"):
-            _do_restart()
-            st.rerun()
-        if rb2.button("Cancel"):
-            st.session_state.confirm_restart = False
-            st.rerun()
-    else:
-        if st.button("← Back to Soma Selection"):
-            st.session_state.confirm_restart = True
-            st.rerun()
-
-    if not st.session_state.soma_points:
-        st.warning("No cells selected.")
-        st.stop()
+    if st.button("← Back to Soma Selection"):
+        st.session_state.ui_mode = "selecting"
+        st.rerun()
 
     with st.spinner("Running pipeline..."):
         processed_image, binary, skeleton = run_scientific_skeletonization(img_gray, 11)
 
     farthest_endpoints = measure_farthest_neurite(skeleton, st.session_state.soma_points)
 
-    # ── Global Topology Viewer (compact) ────────────────────────
     with st.expander("🌍 Global Topology Viewer", expanded=True):
-        st.caption("Full-field map: white skeleton · green soma markers · red Sholl rings")
-
         glob_ov = np.zeros((*img_gray.shape[:2], 3), dtype=np.uint8)
         glob_ov[skeleton > 0] = [255, 255, 255]
 
         for idx, (raw_x, raw_y) in enumerate(st.session_state.soma_points, start=1):
             result = get_connected_component(skeleton, (raw_y, raw_x))
-            if result[0] is None:
-                continue
+            if result[0] is None: continue
             _, (cx, cy) = result
             m_rad = DEFAULT_MAX_RADIUS
             ft    = farthest_endpoints.get(idx)
             if ft:
                 m_rad = np.ceil(np.sqrt((ft[0]-cx)**2 + (ft[1]-cy)**2) / step_size) * step_size
-            rs = np.unique(np.concatenate([
-                generate_concentric_circles(m_rad, step_size),
-                np.arange(m_rad, m_rad + 3*step_size, step_size)
-            ]))
+            rs = np.unique(np.concatenate([generate_concentric_circles(m_rad, step_size), np.arange(m_rad, m_rad + 3*step_size, step_size)]))
             for r in rs:
                 rr, cc = _circle_coords(cy, cx, int(r), glob_ov.shape[:2])
                 glob_ov[rr, cc] = [255, 60, 60]
             cv2.circle(glob_ov, (cx, cy), 5, SOMA_GREEN, -1)
-            cv2.putText(glob_ov, str(idx), (cx+10, cy+10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, SOMA_GREEN, 2, cv2.LINE_AA)
+            cv2.putText(glob_ov, str(idx), (cx+10, cy+10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, SOMA_GREEN, 2, cv2.LINE_AA)
 
         fig_g, ax_g = plt.subplots(figsize=(10, 5))
         ax_g.imshow(glob_ov);  ax_g.axis("off")
@@ -386,16 +388,14 @@ elif st.session_state.ui_mode == "qc":
         fig_g.tight_layout(pad=0.5)
         st.pyplot(fig_g);  plt.close(fig_g)
 
-    # ── Per-cell analysis loop ────────────────────────────────
-    all_cells_sholl_data = []
-    summary_rows = []
+    local_sholl_data = []
+    local_summary_rows = []
 
     for idx, (raw_x, raw_y) in enumerate(st.session_state.soma_points, start=1):
         st.divider()
-
         comp_mask, (corr_x, corr_y) = get_connected_component(skeleton, (raw_y, raw_x))
         if comp_mask is None:
-            st.warning(f"Cell {idx}: No skeleton found near click — consider re-clicking closer to a branch.")
+            st.warning(f"Cell {idx}: No skeleton found near click.")
             continue
 
         max_radius = DEFAULT_MAX_RADIUS
@@ -404,10 +404,7 @@ elif st.session_state.ui_mode == "qc":
             ex, ey     = farthest
             max_radius = np.ceil(np.sqrt((ex-corr_x)**2 + (ey-corr_y)**2) / step_size) * step_size
 
-        base_r       = generate_concentric_circles(max_radius, step_size)
-        additional_r = np.arange(max_radius, max_radius + 3*step_size, step_size)
-        radii        = np.unique(np.concatenate([base_r, additional_r]))
-
+        radii = np.unique(np.concatenate([generate_concentric_circles(max_radius, step_size), np.arange(max_radius, max_radius + 3*step_size, step_size)]))
         intersections = compute_sholl_intersections(comp_mask, corr_x, corr_y, radii)
 
         with st.spinner(f"Extracting morphometrics for Cell {idx}..."):
@@ -418,19 +415,13 @@ elif st.session_state.ui_mode == "qc":
             sri                         = schoenen_ramification_index(intersections, radii, (corr_x, corr_y), comp_mask)
             soma_area, soma_circ        = soma_shape_metrics(binary, (corr_x, corr_y))
 
-        # ── Cell header with styled banner ────────────────────
         st.markdown(
-            f"<div style='background:linear-gradient(90deg,#1a1a2e,#16213e,#0f3460);"
-            f"padding:0.6rem 1.2rem;border-radius:8px;margin-bottom:0.8rem'>"
-            f"<span style='color:#e0e0e0;font-size:1.15rem;font-weight:600'>"
-            f"🧠 Cell {idx}</span>"
-            f"<span style='color:#7ee8fa;font-size:0.85rem;margin-left:1.2rem'>"
-            f"Soma at ({corr_x}, {corr_y})"
-            f"</span></div>",
+            f"<div style='background:linear-gradient(90deg,#1a1a2e,#16213e,#0f3460);padding:0.6rem 1.2rem;border-radius:8px;margin-bottom:0.8rem'>"
+            f"<span style='color:#e0e0e0;font-size:1.15rem;font-weight:600'>🧠 Cell {idx}</span>"
+            f"<span style='color:#7ee8fa;font-size:0.85rem;margin-left:1.2rem'>Soma at ({corr_x}, {corr_y})</span></div>",
             unsafe_allow_html=True,
         )
 
-        # ── Metric cards with biological reference flags ──────
         m1, m2, m3, m4, m5, m6 = st.columns(6)
         _metric_badge(m1, "Fractal Dim",  fd,        "{:.3f}", "fd")
         _metric_badge(m2, "Lacunarity",   lac,       "{:.2f}", "lac")
@@ -439,106 +430,112 @@ elif st.session_state.ui_mode == "qc":
         _metric_badge(m5, "Soma Area",    soma_area, "{:.0f}", "soma_area", " px")
         _metric_badge(m6, "Circularity",  soma_circ, "{:.2f}", "soma_circ")
 
-        # ── 5-panel QC dashboard (no redundant Panel F) ───────
-        metrics_dict = dict(
-            FD=fd, Lac=lac, Betw=betw, Clos=clos,
-            SRI=sri, Area=soma_area, Circ=soma_circ,
-            log_inv_sizes=_log_sizes, log_counts=_log_counts,
-        )
+        metrics_dict = dict(FD=fd, Lac=lac, Betw=betw, Clos=clos, SRI=sri, Area=soma_area, Circ=soma_circ, log_inv_sizes=_log_sizes, log_counts=_log_counts)
         with st.spinner(f"Rendering QC dashboard for Cell {idx}..."):
-            fig_qc = generate_qc_dashboard(
-                img_gray, binary, skeleton, comp_mask,
-                (corr_x, corr_y), radii, intersections,
-                metrics_dict, G, idx,
-                streamlit_mode=True
-            )
+            fig_qc = generate_qc_dashboard(img_gray, binary, skeleton, comp_mask, (corr_x, corr_y), radii, intersections, metrics_dict, G, idx, streamlit_mode=True)
         st.pyplot(fig_qc)
         plt.close(fig_qc)
 
-        # ── Accept / Reject toggle ────────────────────────────
-        accepted = st.checkbox(
-            f"✅  Include Cell {idx} in Global Report",
-            value=(idx not in st.session_state.rejected_cells),
-            key=f"accept_cell_{idx}",
-        )
+        accepted = st.checkbox(f"✅ Include Cell {idx}", value=(idx not in st.session_state.rejected_cells), key=f"accept_cell_{idx}")
         if accepted:
             st.session_state.rejected_cells.discard(idx)
             for r, inters in zip(radii, intersections):
-                all_cells_sholl_data.append({
-                    "Radius (px)": r, "Intersections": inters, "Cell": f"Cell {idx}",
+                local_sholl_data.append({
+                    "Radius (px)": r, "Intersections": inters, "Cell": f"{current_item['filename']}_C{idx}",
+                    "Group": current_item['group'], "Image": current_item['filename']
                 })
-            summary_rows.append({
-                "Cell": f"Cell {idx}",
-                "Fractal Dim": round(fd, 4)        if not np.isnan(fd)        else float("nan"),
-                "Lacunarity":  round(lac, 4)       if not np.isnan(lac)       else float("nan"),
-                "Ramification":round(sri, 4)       if not np.isnan(sri)       else float("nan"),
-                "Betweenness": round(betw, 4)      if not np.isnan(betw)      else float("nan"),
+            local_summary_rows.append({
+                "Cell": f"{current_item['filename']}_C{idx}",
+                "Group": current_item['group'],
+                "Image": current_item['filename'],
+                "Fractal Dim": round(fd, 4) if not np.isnan(fd) else float("nan"),
+                "Lacunarity":  round(lac, 4) if not np.isnan(lac) else float("nan"),
+                "Ramification":round(sri, 4) if not np.isnan(sri) else float("nan"),
+                "Betweenness": round(betw, 4) if not np.isnan(betw) else float("nan"),
                 "Soma Area px":round(soma_area, 1) if not np.isnan(soma_area) else float("nan"),
                 "Circularity": round(soma_circ, 4) if not np.isnan(soma_circ) else float("nan"),
             })
         else:
             st.session_state.rejected_cells.add(idx)
-            st.caption(f"⚠️ Cell {idx} excluded from Global Report.")
 
-    # ── FIX 4.1: Per-cell summary table ───────────────────────
-    if summary_rows:
-        st.divider()
-        st.markdown("#### 📋 Accepted Cells — Metrics Summary")
-        df_summary = pd.DataFrame(summary_rows).set_index("Cell")
-        st.dataframe(
-            df_summary.style.background_gradient(
-                subset=["Fractal Dim", "Lacunarity"], cmap="RdYlGn"
-            ).format(na_rep="N/A", precision=3),
-            use_container_width=True,
-        )
-        csv_metrics = df_summary.reset_index().to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "📥 Download Metrics CSV",
-            data=csv_metrics,
-            file_name="sholl_morphometrics.csv",
-            mime="text/csv",
-        )
-
-    # ── Global Pipeline Report ────────────────────────────────
-    if all_cells_sholl_data:
-        st.divider()
-        st.markdown("### 📈 Global Pipeline Report")
-        df_sholl = pd.DataFrame(all_cells_sholl_data)
-        n_cells  = df_sholl["Cell"].nunique()
-
-        pcol1, pcol2 = st.columns([1, 3])
-        palette_opt     = pcol1.selectbox("🎨 Palette",
-            ["colorblind", "husl", "viridis", "magma", "Set2", "flare", "mako"])
-        show_individual = pcol1.toggle("Show individual cell curves", value=False,
-            help="Off = Mean ± SEM only; On = one trace per cell + mean")
-
-        df_sholl["Radius (µm)"] = df_sholl["Radius (px)"] * conv_factor
-
-        fig_global, ax_glob = plt.subplots(figsize=(10, 6))
-        if show_individual:
-            sns.lineplot(data=df_sholl, x="Radius (µm)", y="Intersections",
-                hue="Cell", alpha=0.55, linewidth=1.2, palette=palette_opt, ax=ax_glob)
-            sns.lineplot(data=df_sholl, x="Radius (µm)", y="Intersections",
-                color="black", linewidth=2.5, errorbar=None, label="Mean", ax=ax_glob)
+    st.divider()
+    if st.button("💾 Save Cells & Next Image", type="primary"):
+        st.session_state.master_sholl_data.extend(local_sholl_data)
+        st.session_state.master_metrics.extend(local_summary_rows)
+        
+        st.session_state.current_queue_idx += 1
+        st.session_state.soma_points = []
+        st.session_state.rejected_cells = set()
+        
+        if st.session_state.current_queue_idx >= len(st.session_state.experiment_queue):
+            st.session_state.ui_mode = "export"
         else:
-            mean_color = sns.color_palette(palette_opt, n_colors=1)[0]
-            sns.lineplot(data=df_sholl, x="Radius (µm)", y="Intersections",
-                color=mean_color, linewidth=2.5, errorbar="se",
-                err_kws={"alpha": 0.25}, ax=ax_glob,
-                label=f"Mean ± SEM  (n={n_cells})")
+            st.session_state.ui_mode = "selecting"
+        st.rerun()
 
-        ax_glob.set_xlabel(f"Distance from Soma (µm)  [1 px = {conv_factor} µm]",
-                           fontweight="bold", fontsize=12)
-        ax_glob.set_ylabel("Number of Intersections",  fontweight="bold", fontsize=12)
-        ax_glob.set_title("Aggregated Sholl Morphometric Analysis", fontweight="bold", fontsize=14)
-        ax_glob.legend(fontsize=10, frameon=False)
+# ─────────────────────────────────────────────────────────────
+# STEP 4 — GLOBAL PIPELINE REPORT (BATCH AGGREGATION)
+# ─────────────────────────────────────────────────────────────
+elif st.session_state.ui_mode == "export":
+    st.markdown("### Step 4: Batch Global Report")
+    
+    if st.button("← Back to Setup (Restart)", on_click=_do_restart):
+        st.rerun()
+
+    if not st.session_state.master_sholl_data:
+        st.warning("No data was collected.")
+        st.stop()
+
+    df_sholl = pd.DataFrame(st.session_state.master_sholl_data)
+    df_metrics = pd.DataFrame(st.session_state.master_metrics)
+    conv_factor = st.session_state.um_per_px
+    df_sholl["Radius (µm)"] = df_sholl["Radius (px)"] * conv_factor
+
+    st.markdown("#### 📊 Comparative Sholl Curve")
+    pcol1, pcol2 = st.columns([1, 3])
+    palette_opt = pcol1.selectbox("🎨 Palette", ["colorblind", "husl", "Set2", "viridis", "flare"])
+    show_individual = pcol1.toggle("Show individual cell curves", value=False)
+
+    fig_global, ax_glob = plt.subplots(figsize=(10, 6))
+    if show_individual:
+        sns.lineplot(data=df_sholl, x="Radius (µm)", y="Intersections", hue="Group", units="Cell", estimator=None, alpha=0.3, linewidth=1.0, palette=palette_opt, ax=ax_glob)
+        sns.lineplot(data=df_sholl, x="Radius (µm)", y="Intersections", hue="Group", linewidth=2.5, errorbar=None, palette=palette_opt, ax=ax_glob)
+    else:
+        sns.lineplot(data=df_sholl, x="Radius (µm)", y="Intersections", hue="Group", linewidth=2.5, errorbar="se", palette=palette_opt, ax=ax_glob)
+
+    ax_glob.set_xlabel(f"Distance from Soma (µm)  [1 px = {conv_factor} µm]", fontweight="bold")
+    ax_glob.set_ylabel("Number of Intersections",  fontweight="bold")
+    ax_glob.set_title("Grouped Sholl Profiles", fontweight="bold")
+    ax_glob.legend(title="Group", frameon=False)
+    sns.despine()
+    pcol2.pyplot(fig_global)
+    plt.close(fig_global)
+
+    st.markdown("#### 📋 Morphometric Comparisons")
+    if len(df_metrics) > 0 and "Group" in df_metrics.columns:
+        fig_m, axes = plt.subplots(1, 4, figsize=(16, 4))
+        metrics_to_plot = ["Fractal Dim", "Ramification", "Soma Area px", "Lacunarity"]
+        for ax, metric in zip(axes, metrics_to_plot):
+            sns.boxplot(data=df_metrics, x="Group", y=metric, palette=palette_opt, ax=ax, width=0.5)
+            sns.stripplot(data=df_metrics, x="Group", y=metric, color="black", alpha=0.5, ax=ax)
+            ax.set_title(metric)
+            ax.set_xlabel("")
         sns.despine()
-        pcol2.pyplot(fig_global);  plt.close(fig_global)
+        fig_m.tight_layout()
+        st.pyplot(fig_m)
+        plt.close(fig_m)
 
-        csv = df_sholl.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="📥 Download Sholl Data as CSV",
-            data=csv, file_name="sholl_analysis_results.csv", mime="text/csv",
-            help="Download the full intersection table ready for GraphPad / Excel.",
-        )
-
+    st.divider()
+    col_csv1, col_csv2 = st.columns(2)
+    col_csv1.download_button(
+        "📥 Download Master Sholl CSV",
+        data=df_sholl.to_csv(index=False).encode("utf-8"),
+        file_name="master_sholl_intersections.csv",
+        mime="text/csv"
+    )
+    col_csv2.download_button(
+        "📥 Download Master Metrics CSV",
+        data=df_metrics.to_csv(index=False).encode("utf-8"),
+        file_name="master_morphometrics.csv",
+        mime="text/csv"
+    )
