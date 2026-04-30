@@ -249,7 +249,7 @@ if st.session_state.ui_mode == "selecting":
         st.markdown("---")
         st.markdown("#### 🎛️ Denoising & Analysis Parameters")
         c1, c2, c3 = st.columns(3)
-        h_val       = c1.slider("NLM Parameter (h)", min_value=1, max_value=30, value=11)
+        h_val       = c1.slider("NLM Parameter (h)", min_value=1, max_value=20, value=9)
         step_size_w = int(c2.number_input("Sholl Step Size (px)", min_value=1, max_value=50, value=st.session_state.step_size))
         um_per_px_w = float(c3.number_input(
             "Pixel size (µm/px)", min_value=0.01, max_value=10.0,
