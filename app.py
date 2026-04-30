@@ -185,13 +185,18 @@ def _list_samples():
 # STEP 1: QUEUE SETUP
 # ─────────────────────────────────────────────────────────────
 if st.session_state.ui_mode == "queue_setup":
-    w1, w2, w3 = st.columns([1, 2, 1])
-    workflow_choice = w2.radio(
-        "🧠 Select Analysis Mode:", 
-        options=["Single Image (Quick)", "Batch Mode (Experiment Groups)"], 
-        index=0 if st.session_state.get("workflow_mode", "Single Image") == "Single Image" else 1,
-        horizontal=True
-    )
+    col_h1, col_h2 = st.columns([1, 1])
+    with col_h1:
+        st.markdown(f"### Step 1: {'Experiment Builder' if st.session_state.get('workflow_mode') == 'Batch Mode' else 'Select an Image'}")
+    with col_h2:
+        st.markdown("<div style='margin-top: 8px'></div>", unsafe_allow_html=True) # visual alignment
+        workflow_choice = st.radio(
+            "Workflow Mode", 
+            options=["Single Image (Quick)", "Batch Mode (Experiment Groups)"], 
+            index=0 if st.session_state.get("workflow_mode", "Single Image") == "Single Image" else 1,
+            horizontal=True,
+            label_visibility="collapsed"
+        )
     
     new_mode = "Single Image" if "Single Image" in workflow_choice else "Batch Mode"
     if new_mode != st.session_state.workflow_mode:
@@ -202,7 +207,6 @@ if st.session_state.ui_mode == "queue_setup":
     st.markdown("---")
 
     if st.session_state.workflow_mode == "Batch Mode":
-        st.markdown("### Step 1: Experiment Builder")
         col1, col2 = st.columns([1, 2])
         with col1:
             st.markdown("#### Define Experimental Groups")
@@ -217,7 +221,6 @@ if st.session_state.ui_mode == "queue_setup":
             target_group = st.selectbox("Assign images to group:", st.session_state.available_groups)
         img_col = col2
     else:
-        st.markdown("### Step 1: Select an Image")
         target_group = "Single_Run"
         img_col = st.container()
 
