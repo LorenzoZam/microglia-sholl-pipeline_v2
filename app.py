@@ -345,9 +345,10 @@ if st.session_state.ui_mode == "selecting":
         um_per_px_w = float(c3.number_input("Pixel size (µm/px)", min_value=0.01, max_value=10.0, value=st.session_state.um_per_px, step=0.01))
 
         with st.expander("⚙️ Advanced Pipeline Settings", expanded=False):
-            adv1, adv2 = st.columns(2)
+            adv1, adv2, adv3 = st.columns(3)
             tmpl_win   = adv1.slider("NLM Template Window (px)", 5, 15, 7, step=2)
             search_win = adv2.slider("NLM Search Window (px)", 11, 31, 21, step=2)
+            display_width = adv3.slider("Image Display Width (px)", 400, 1600, 550, step=50, help="Scale images for your monitor")
 
     with st.spinner("Applying rigorous morphological filters..."):
         processed_image, binary, skeleton = run_scientific_skeletonization(img_gray, h_val, tmpl_win, search_win)
@@ -362,7 +363,7 @@ if st.session_state.ui_mode == "selecting":
         cv2.putText(ov_left,  str(idx), (int(cx)+10, int(cy)+10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, SOMA_GREEN, 2, cv2.LINE_AA)
         cv2.putText(ov_right, str(idx), (int(cx)+10, int(cy)+10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, SOMA_GREEN, 2, cv2.LINE_AA)
 
-    scale_ratio    = min(1.0, DISPLAY_WIDTH_PX / float(ov_left.shape[1]))
+    scale_ratio    = min(1.0, display_width / float(ov_left.shape[1]))
     new_dim        = (int(ov_left.shape[1] * scale_ratio), int(ov_left.shape[0] * scale_ratio))
     ov_left_small  = cv2.resize(ov_left,  new_dim, interpolation=cv2.INTER_AREA)
     ov_right_small = cv2.resize(ov_right, new_dim, interpolation=cv2.INTER_AREA)
@@ -438,7 +439,8 @@ elif st.session_state.ui_mode == "qc":
             cv2.circle(glob_ov, (cx, cy), 5, SOMA_GREEN, -1)
             cv2.putText(glob_ov, str(idx), (cx+10, cy+10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, SOMA_GREEN, 2, cv2.LINE_AA)
 
-        fig_g, ax_g = plt.subplots(figsize=(10, 5))
+        aspect = img_gray.shape[0] / img_gray.shape[1]
+        fig_g, ax_g = plt.subplots(figsize=(6, 6 * aspect))
         ax_g.imshow(glob_ov);  ax_g.axis("off")
         ax_g.set_title("Global Skeleton Map with Sholl Rings", fontsize=11, fontweight="bold")
         fig_g.tight_layout(pad=0.5)
@@ -553,12 +555,17 @@ elif st.session_state.ui_mode == "export":
     palette_opt = pcol1.selectbox("🎨 Palette", ["colorblind", "husl", "Set2", "viridis", "flare"])
     show_individual = pcol1.toggle("Show individual cell curves", value=False)
 
+    # Add n size to group labels
+    group_counts = df_metrics.groupby("Group")["Cell"].nunique().to_dict()
+    df_sholl["Group_n"] = df_sholl["Group"].apply(lambda g: f"{g} (n={group_counts.get(g, 0)})")
+    df_metrics["Group_n"] = df_metrics["Group"].apply(lambda g: f"{g} (n={group_counts.get(g, 0)})")
+
     fig_global, ax_glob = plt.subplots(figsize=(10, 6))
     if show_individual:
-        sns.lineplot(data=df_sholl, x="Radius (µm)", y="Intersections", hue="Group", units="Cell", estimator=None, alpha=0.3, linewidth=1.0, palette=palette_opt, ax=ax_glob)
-        sns.lineplot(data=df_sholl, x="Radius (µm)", y="Intersections", hue="Group", linewidth=2.5, errorbar=None, palette=palette_opt, ax=ax_glob)
+        sns.lineplot(data=df_sholl, x="Radius (µm)", y="Intersections", hue="Group_n", units="Cell", estimator=None, alpha=0.3, linewidth=1.0, palette=palette_opt, ax=ax_glob)
+        sns.lineplot(data=df_sholl, x="Radius (µm)", y="Intersections", hue="Group_n", linewidth=2.5, errorbar=None, palette=palette_opt, ax=ax_glob)
     else:
-        sns.lineplot(data=df_sholl, x="Radius (µm)", y="Intersections", hue="Group", linewidth=2.5, errorbar="se", palette=palette_opt, ax=ax_glob)
+        sns.lineplot(data=df_sholl, x="Radius (µm)", y="Intersections", hue="Group_n", linewidth=2.5, errorbar="se", palette=palette_opt, ax=ax_glob)
 
     ax_glob.set_xlabel(f"Distance from Soma (µm)  [1 px = {conv_factor} µm]", fontweight="bold")
     ax_glob.set_ylabel("Number of Intersections",  fontweight="bold")
@@ -569,12 +576,12 @@ elif st.session_state.ui_mode == "export":
     plt.close(fig_global)
 
     st.markdown("#### 📋 Morphometric Comparisons")
-    if len(df_metrics) > 0 and "Group" in df_metrics.columns:
+    if len(df_metrics) > 0 and "Group_n" in df_metrics.columns:
         fig_m, axes = plt.subplots(1, 4, figsize=(16, 4))
         metrics_to_plot = ["Fractal Dim", "Ramification", "Soma Area px", "Lacunarity"]
         for ax, metric in zip(axes, metrics_to_plot):
-            sns.boxplot(data=df_metrics, x="Group", y=metric, palette=palette_opt, ax=ax, width=0.5)
-            sns.stripplot(data=df_metrics, x="Group", y=metric, color="black", alpha=0.5, ax=ax)
+            sns.boxplot(data=df_metrics, x="Group_n", y=metric, palette=palette_opt, ax=ax, width=0.5)
+            sns.stripplot(data=df_metrics, x="Group_n", y=metric, color="black", alpha=0.5, ax=ax)
             ax.set_title(metric)
             ax.set_xlabel("")
         sns.despine()

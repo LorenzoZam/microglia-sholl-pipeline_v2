@@ -694,7 +694,7 @@ def generate_qc_dashboard(original_image, binary_image, skeleton_mask,
     #  STREAMLIT MODE — compact 5-panel layout (no redundant metric card)
     # =====================================================================
     if streamlit_mode:
-        fig = plt.figure(figsize=(16, 9))
+        fig = plt.figure(figsize=(11, 6))
         fig.suptitle(f"QC Dashboard  —  Soma {soma_id}", fontsize=13,
                      fontweight='bold', color='#333')
         gs = GridSpec(2, 6, figure=fig, hspace=0.32, wspace=0.55)
@@ -872,7 +872,6 @@ def generate_qc_dashboard(original_image, binary_image, skeleton_mask,
 
     if output_path:
         fig.savefig(output_path, dpi=150, bbox_inches='tight')
-        return fig
 
     # Add interactive Accept/Reject buttons to fix Windows input() crash
     ax_acc = plt.axes([0.65, 0.02, 0.08, 0.05])
