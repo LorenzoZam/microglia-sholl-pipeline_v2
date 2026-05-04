@@ -443,11 +443,23 @@ Images are used exclusively for methodological demonstration and were not modifi
 
 ## Citation
 
-If you use this pipeline in your research, presentations, or publications, please cite:
+If you use this pipeline in your research, presentations, or publications, please cite the software as follows:
 
+**APA:**
+> Zammariello, L. (2026). MicroSholl: Advanced Microglia Morphology Analysis Pipeline (v2.0.0). GitHub. https://github.com/LorenzoZam/microglia-sholl-pipeline
+
+**BibTeX:**
+```bibtex
+@software{Zammariello_MicroSholl_2026,
+  author = {Zammariello, Lorenzo},
+  title = {{MicroSholl: Advanced Microglia Morphology Analysis Pipeline}},
+  url = {https://github.com/LorenzoZam/microglia-sholl-pipeline},
+  version = {2.0.0},
+  year = {2026}
+}
 ```
-Zammariello, L. (2026). MicroSholl: Advanced Microglia Morphology Analysis Pipeline.
-GitHub: https://github.com/LorenzoZam/microglia-sholl-pipeline
-```
+
+> [!NOTE]
+> You can also use the **"Cite this repository"** button on the GitHub sidebar to export the citation in your preferred format.
 
 > This software is provided "as is", without warranty of any kind. Contributions and forks are welcome under the MIT License.
