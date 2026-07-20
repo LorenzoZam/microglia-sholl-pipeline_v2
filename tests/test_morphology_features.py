@@ -1,4 +1,5 @@
 import numpy as np
+import networkx as nx
 
 from morphology_features import (
     box_counting_fractal_dimension,
@@ -29,6 +30,16 @@ def test_simple_graph_has_finite_centralities():
     betweenness, closeness = compute_graph_centralities(graph)
     assert np.isfinite(betweenness)
     assert np.isfinite(closeness)
+
+
+def test_three_node_path_has_exact_mean_centralities():
+    graph = nx.path_graph(3)
+    betweenness, closeness = compute_graph_centralities(graph)
+
+    # Normalized node betweenness is [0, 1, 0], with mean 1/3.
+    # Node closeness is [2/3, 1, 2/3], with mean 7/9.
+    assert np.isclose(betweenness, 1.0 / 3.0)
+    assert np.isclose(closeness, 7.0 / 9.0)
 
 
 def test_sampled_ramification_index_uses_first_radius():

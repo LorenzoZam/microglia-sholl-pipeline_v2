@@ -25,6 +25,59 @@ def test_two_opposed_branches_cross_twice():
     assert compute_sholl_intersections(skeleton, 10, 10, [2, 5]).tolist() == [2, 2]
 
 
+def test_single_branch_is_rotationally_consistent():
+    center = (10, 10)
+    radii = [2, 4, 7]
+
+    horizontal = np.zeros((25, 25), dtype=np.uint8)
+    horizontal[center[1], center[0]:center[0] + 9] = 255
+
+    vertical = np.zeros((25, 25), dtype=np.uint8)
+    vertical[center[1]:center[1] + 9, center[0]] = 255
+
+    diagonal = np.zeros((25, 25), dtype=np.uint8)
+    for offset in range(9):
+        diagonal[center[1] + offset, center[0] + offset] = 255
+
+    expected = [1, 1, 1]
+    assert compute_sholl_intersections(horizontal, *center, radii).tolist() == expected
+    assert compute_sholl_intersections(vertical, *center, radii).tolist() == expected
+    assert compute_sholl_intersections(diagonal, *center, radii).tolist() == expected
+
+
+def test_four_unequal_arms_have_manual_sholl_profile():
+    center_x = center_y = 15
+    skeleton = np.zeros((31, 31), dtype=np.uint8)
+
+    # Arm lengths from the center: right=8, left=6, up=4, down=2 pixels.
+    skeleton[center_y, center_x:center_x + 9] = 255
+    skeleton[center_y, center_x - 6:center_x + 1] = 255
+    skeleton[center_y - 4:center_y + 1, center_x] = 255
+    skeleton[center_y:center_y + 3, center_x] = 255
+
+    # At radii 2, 4, 6, and 8 respectively, 4, 3, 2, and 1 arms reach
+    # the circle. These counts are obtained directly from the arm lengths.
+    observed = compute_sholl_intersections(
+        skeleton, center_x, center_y, [2, 4, 6, 8]
+    )
+    assert observed.tolist() == [4, 3, 2, 1]
+
+
+def test_u_shaped_branch_crosses_one_circle_twice():
+    center_x = center_y = 15
+    skeleton = np.zeros((31, 31), dtype=np.uint8)
+
+    # One continuous path starts at the soma, exits radius 5 along the top
+    # segment, loops downward, and re-enters radius 5 along the bottom segment.
+    skeleton[center_y, center_x:center_x + 8] = 255
+    skeleton[center_y:center_y + 4, center_x + 7] = 255
+    skeleton[center_y + 3, center_x:center_x + 8] = 255
+
+    assert compute_sholl_intersections(
+        skeleton, center_x, center_y, [5]
+    ).tolist() == [2]
+
+
 def test_tangent_does_not_count_as_crossing():
     skeleton = np.zeros((21, 21), dtype=np.uint8)
     skeleton[5, 8:13] = 255
