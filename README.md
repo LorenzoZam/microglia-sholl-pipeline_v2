@@ -1,5 +1,7 @@
 # 🧠 MicroSholl — Microglia Morphometrics and Batch Sholl Analysis
 
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://microglia-sholl-pipelinev2-jshmxvlbw7e88xqpbjvkxf.streamlit.app/)
+
 > A Python research pipeline for exploratory 2-D Sholl analysis of microglial
 > images, with interactive quality control and batch processing.
 
@@ -372,8 +374,8 @@ cd microglia-sholl-pipeline_v2
 
 # 2. Create a virtual environment (recommended)
 python -m venv venv
-source venv/bin/activate       # Linux/macOS
-venv\Scripts\activate          # Windows
+source venv/bin/activate          # Linux/macOS
+.\venv\Scripts\Activate.ps1      # Windows PowerShell
 
 # 3. Install dependencies
 pip install -r requirements.txt
@@ -409,6 +411,8 @@ python plot_sholl_profiles.py
 Reads the master CSV and produces population-level curves.
 
 ### Streamlit app
+
+[Launch the Streamlit app](https://microglia-sholl-pipelinev2-jshmxvlbw7e88xqpbjvkxf.streamlit.app/)
 
 ```bash
 streamlit run app.py
