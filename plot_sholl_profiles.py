@@ -127,17 +127,94 @@ def plot_comparison_curve_simple(file_paths, labels, colors):
 #  Mixed-effects Sholl model
 # ===========================================================================
 
+def _validate_mixed_model_input(df, spline_df):
+    """Validate identifiers and observations required by the mixed model."""
+    if df["Group"].nunique(dropna=False) < 2:
+        raise ValueError("Mixed-effects modeling requires at least two groups.")
+
+    animal_group_counts = df.groupby("Animal_ID", dropna=False)["Group"].nunique(
+        dropna=False
+    )
+    invalid_animals = animal_group_counts[animal_group_counts > 1].index.tolist()
+    if invalid_animals:
+        raise ValueError(
+            "Each Animal_ID must belong to exactly one Group; conflicting "
+            f"animals: {invalid_animals}"
+        )
+
+    cell_animal_counts = df.groupby("Cell_ID", dropna=False)["Animal_ID"].nunique(
+        dropna=False
+    )
+    invalid_cells = cell_animal_counts[cell_animal_counts > 1].index.tolist()
+    if invalid_cells:
+        raise ValueError(
+            "Each Cell_ID must belong to exactly one Animal_ID; conflicting "
+            f"cells: {invalid_cells}"
+        )
+
+    intersection_values = df["Intersections"].to_numpy(dtype=float)
+    if not np.isfinite(intersection_values).all() or (intersection_values < 0).any():
+        raise ValueError("Intersections must be finite and non-negative.")
+
+    radius_values = df["Radius_um"].to_numpy(dtype=float)
+    if not np.isfinite(radius_values).all() or (radius_values <= 0).any():
+        raise ValueError("Radius_um values must be finite and positive.")
+
+    duplicates = df.duplicated(subset=["Cell_ID", "Radius_um"], keep=False)
+    if duplicates.any():
+        duplicate_rows = df.loc[duplicates, ["Cell_ID", "Radius_um"]]
+        examples = duplicate_rows.drop_duplicates().head(5).to_dict("records")
+        raise ValueError(
+            "Duplicate Cell_ID x Radius_um observations detected; each cell "
+            f"may have only one observation per radius. Examples: {examples}"
+        )
+
+    distinct_radii = df["Radius_um"].nunique()
+    if distinct_radii < spline_df:
+        raise ValueError(
+            f"Natural cubic spline df={spline_df} requires at least "
+            f"{spline_df} distinct Radius_um values; found {distinct_radii}."
+        )
+
+
+def _mixed_model_variance_summary(result):
+    """Extract fitted variances and correlations from a mixed-model result."""
+    animal_variance = float(result.cov_re.iloc[0, 0])
+    variance_components = np.asarray(result.vcomp, dtype=float).ravel()
+    if variance_components.size < 1:
+        raise ValueError("Fitted result does not contain the Cell variance component.")
+    cell_variance = float(variance_components[0])
+    residual_variance = float(result.scale)
+    total_variance = animal_variance + cell_variance + residual_variance
+    if not np.isfinite(total_variance) or total_variance <= 0:
+        raise ValueError("Total fitted variance must be finite and positive.")
+
+    return {
+        "animal_variance": animal_variance,
+        "cell_variance": cell_variance,
+        "residual_variance": residual_variance,
+        "total_variance": total_variance,
+        "animal_level_icc": animal_variance / total_variance,
+        "within_cell_correlation": (
+            animal_variance + cell_variance
+        ) / total_variance,
+    }
+
+
 def fit_mixed_effects_sholl(df, spline_df=SPLINE_DF):
     """
     Fit a Hierarchical Mixed-Effects Model to Sholl intersection data.
 
     Model:
         Intersections ~ cr(Radius_um, df) * C(Group)
-        Random effect:  (1 | Animal_ID)
+        Animal random intercept: (1 | Animal_ID)
+        Cell-within-animal variance component: 0 + C(Cell_ID)
+        Residual: Gaussian with a common residual variance
 
     Uses Natural Cubic Splines (patsy ``cr()``) to model the non-linear
     relationship between radius and intersections, with Group as a
-    categorical fixed effect and Animal_ID as random intercepts.
+    categorical fixed effect. The Gaussian linear mixed model is fitted by
+    restricted maximum likelihood (REML).
 
     Parameters
     ----------
@@ -162,17 +239,30 @@ def fit_mixed_effects_sholl(df, spline_df=SPLINE_DF):
 
     # Prepare data
     df = df.copy()
-    df = add_cell_id(df)
-    df["Radius_um"] = radius_um(df)
-    df["Intersections"] = df["Intersections"].astype(float)
-
-    # Ensure required columns
     for col in ("Animal_ID", "Group"):
         if col not in df.columns:
             raise ValueError(
                 f"Column '{col}' not found.  Run merge_sholl_results.py first "
                 "to generate Animal_ID and Group columns."
             )
+
+    if "Cell_ID" in df.columns:
+        original_cell_animal_counts = df.groupby(
+            "Cell_ID", dropna=False
+        )["Animal_ID"].nunique(dropna=False)
+        invalid_original_cells = original_cell_animal_counts[
+            original_cell_animal_counts > 1
+        ].index.tolist()
+        if invalid_original_cells:
+            raise ValueError(
+                "Each Cell_ID must belong to exactly one Animal_ID; conflicting "
+                f"cells: {invalid_original_cells}"
+            )
+
+    df = add_cell_id(df)
+    df["Radius_um"] = radius_um(df)
+    df["Intersections"] = df["Intersections"].astype(float)
+    _validate_mixed_model_input(df, spline_df)
 
     # Build formula with natural cubic spline × Group interaction
     formula = (
@@ -182,7 +272,10 @@ def fit_mixed_effects_sholl(df, spline_df=SPLINE_DF):
     print("\n" + "=" * 70)
     print("Fitting Hierarchical Mixed-Effects Model")
     print(f"  Formula:  {formula}")
-    print(f"  Random effect:  (1 | Animal_ID)")
+    print(f"  Animal random intercept:          (1 | Animal_ID)")
+    print(f"  Cell-within-animal component:     0 + C(Cell_ID)")
+    print(f"  Residual distribution:            Gaussian")
+    print(f"  Fitting method:                   REML")
     print(f"  N observations: {len(df)}")
     print(f"  N animals:      {df['Animal_ID'].nunique()}")
     print(f"  N groups:       {df['Group'].nunique()}")
@@ -196,12 +289,18 @@ def fit_mixed_effects_sholl(df, spline_df=SPLINE_DF):
 
     print(result.summary())
 
-    # Intra-class correlation (ICC)
-    var_animal = float(result.cov_re.iloc[0, 0])
-    var_resid = float(result.scale)
-    icc = var_animal / (var_animal + var_resid)
-    print(f"\nIntra-class Correlation (ICC):  {icc:.4f}")
-    print(f"  → {icc*100:.1f}% of residual variance is between animals")
+    variance = _mixed_model_variance_summary(result)
+    print("\nVariance components:")
+    print(f"  Animal variance:                 {variance['animal_variance']:.6g}")
+    print(f"  Cell-within-animal variance:     {variance['cell_variance']:.6g}")
+    print(f"  Residual variance:               {variance['residual_variance']:.6g}")
+    print(f"  Total variance:                  {variance['total_variance']:.6g}")
+    print("Correlations:")
+    print(f"  Animal-level ICC:                {variance['animal_level_icc']:.4f}")
+    print(
+        "  Within-cell correlation:         "
+        f"{variance['within_cell_correlation']:.4f}"
+    )
 
     return result
 
