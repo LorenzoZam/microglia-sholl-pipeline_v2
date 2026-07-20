@@ -1,7 +1,7 @@
-# 🧠 MicroSholl — Advanced Microglia Morphology Analysis Pipeline
+# 🧠 MicroSholl — Microglia Morphometrics and Batch Sholl Analysis
 
-> **From raw confocal image to publication-ready morphometric data in minutes.**  
-> A Python pipeline for robust, reproducible Sholl analysis of microglial cells, with interactive quality control and batch processing.
+> A Python research pipeline for exploratory 2-D Sholl analysis of microglial
+> images, with interactive quality control and batch processing.
 
 ---
 
@@ -31,30 +31,37 @@
 
 ## Introduction
 
-Microglial morphology is a direct, quantifiable readout of neuroinflammatory state. Ramified microglia with long, branched processes are characteristic of a surveillant, homeostatic phenotype, while amoeboid, process-retracted cells signal activation. Sholl analysis — counting intersections between concentric circles and a skeletonized cell arbor — is the gold-standard method for quantifying this complexity.
+Microglial morphology is a useful quantitative correlate of cellular state, but
+it is not a direct measurement of inflammatory function. Ramification and soma
+shape should be interpreted in the context of species, brain region, staining,
+imaging, and complementary molecular or functional measurements. Sholl analysis
+counts crossings between concentric circles and a reconstructed cell arbor and
+is one established way to describe spatial complexity.
 
-However, standard implementations (e.g., ImageJ/Fiji plugins) suffer from:
+Common challenges in Sholl-analysis workflows include:
 - **Manual, time-consuming workflows** that bottleneck large studies
 - **Sensitivity to image quality**, causing fragmented skeletons and erroneous counts
 - **No built-in quality control**, leading to undetected analysis errors
 - **No traceability**, making it difficult to reproduce or audit results
 
-**MicroSholl** is a semi-automated Python pipeline that solves all of these problems. It combines rigorous, publication-grade image processing with an interactive GUI, enabling neuroscientists to analyze entire experiments in a single session with full traceability.
+**MicroSholl** is a semi-automated Python pipeline intended to make this workflow
+inspectable and easier to repeat. Its outputs require visual QC and experimental
+validation before use in inferential or publication workflows.
 
 ---
 
 ## Why MicroSholl
 
-| Feature | ImageJ Plugin | MicroSholl |
-|---|:---:|:---:|
-| Automated skeleton extraction | ✅ | ✅ |
-| Adaptive noise reduction | ❌ | ✅ |
-| Automated denoising parameter estimation | ❌ | ✅ |
-| Multi-cell batch analysis | ❌ | ✅ |
-| Interactive QC per cell | ❌ | ✅ |
-| Fractal Dimension & graph metrics | ❌ | ✅ |
-| Master CSV across image files | ❌ | ✅ |
-| Full traceability (per-cell images) | ❌ | ✅ |
+| Feature | MicroSholl |
+|---|:---:|
+| Automated skeleton extraction | ✅ |
+| Adaptive noise reduction | ✅ |
+| User-reviewed denoising | ✅ |
+| Multi-cell batch analysis | ✅ |
+| Interactive QC per cell | ✅ |
+| Fractal dimension and graph descriptors | ✅ |
+| Master CSV across image files | ✅ |
+| Per-cell images and parameter metadata | ✅ |
 
 ---
 
@@ -64,8 +71,8 @@ This release represents a major upgrade over the original pipeline, adding sever
 
 ### 🎛️ Automated Denoising UI (Zero-Lag Slider)
 The original pipeline required manually selecting an `h` denoising value from a static grid. v2.0 replaces this with:
-- **Mathematical noise estimation** using `skimage.restoration.estimate_sigma` (wavelet-based) to automatically compute an optimal starting `h` value
-- **Pre-computed skeleton previews** for a range of ±4 values around the optimum, so the slider updates instantaneously with zero computational lag
+- **Wavelet-based noise estimation** using `skimage.restoration.estimate_sigma` to compute a heuristic starting `h` value
+- **Pre-computed skeleton previews** for a range of ±4 values around that starting value
 - The user validates or adjusts the value with full visual feedback before committing
 
 ### 📊 Interactive QC Dashboard
@@ -75,7 +82,7 @@ Each cell now receives a full 6-panel quality control dashboard before its data 
 - Skeleton graph (colored by betweenness centrality)
 - Fractal Dimension log-log regression
 - Per-cell Sholl profile curve
-- Metric summary card with biological reference ranges
+- Metric summary card with configurable QC ranges (not biological norms)
 - GUI buttons: **[Accept]**, **[Reject]**, **[Accept All]** — replaces error-prone terminal input
 
 ### 🔬 Extended Morphometric Feature Extraction
@@ -90,7 +97,7 @@ Beyond raw Sholl intersections, v2.0 now computes and exports:
 The pipeline now accepts **multiple image files in a single session**:
 - Select 1 to N images via a multi-file dialog (hold Ctrl/Shift)
 - Each image is processed sequentially with its own denoising UI, soma selection, and QC review
-- A global `MASTER_Sholl_Metrics_Batch.csv` is automatically generated at the end, with an `Image_Name` column for full traceability
+- A global `MASTER_Sholl_Metrics_Batch.csv` is automatically generated at the end, with an `Image_Name` column for source-image identification
 
 ---
 
@@ -106,12 +113,12 @@ The pipeline now accepts **multiple image files in a single session**:
   │  1. Patch-wise Adaptive CLAHE                               │
   │     → Divides image into local patches                      │
   │     → Applies CLAHE independently per patch                 │
-  │     → Preserves fine structures in heterogeneous backgrounds│
+  │     → Applies local enhancement in heterogeneous backgrounds │
   └───────────────────────┬─────────────────────────────────────┘
                           ▼
   ┌─────────────────────────────────────────────────────────────┐
   │  2. Automated Denoising (NL-Means) + Interactive Slider UI  │
-  │     → estimate_sigma() for mathematically optimal h value   │
+  │     → estimate_sigma() for a heuristic starting h value     │
   │     → Pre-computed skeleton range shown to user in real-time│
   │     → User confirms or fine-tunes before proceeding         │
   └───────────────────────┬─────────────────────────────────────┘
@@ -134,11 +141,11 @@ The pipeline now accepts **multiple image files in a single session**:
   ┌─────────────────────────────────────────────────────────────┐
   │  5. Per-Cell Connected Component Isolation                  │
   │     → 8-connectivity labeling isolates each cell's arbor    │
-  │     → Prevents cross-cell contamination in dense images     │
+  │     → Intended to limit cross-cell mixing in dense images    │
   └───────────────────────┬─────────────────────────────────────┘
                           ▼
   ┌─────────────────────────────────────────────────────────────┐
-  │  6. Sholl Analysis + Full Morphometrics Extraction          │
+  │  6. Sholl Analysis + Morphometric Descriptor Extraction     │
   │     → Concentric circles at step_size = 4 px               │
   │     → Intersection counting at each radius                  │
   │     → Fractal Dimension, Lacunarity, Graph centralities,    │
@@ -166,17 +173,17 @@ The pipeline now accepts **multiple image files in a single session**:
 
 ### (A) Patch-wise Adaptive Preprocessing
 
-Classical global CLAHE amplifies both signal and background uniformly, corrupting skeletonization in heterogeneous tissue. The pipeline divides the input image into overlapping patches and applies CLAHE locally, preserving fine terminal dendrites while suppressing background.
+Global CLAHE can amplify both signal and background in heterogeneous tissue. The pipeline instead divides the input image into overlapping patches and applies CLAHE locally; its effect on segmentation and skeletonization must be validated for each dataset.
 
 <table align="center">
   <tr>
     <td align="center" width="50%">
       <img src="data/M_02_global.png" width="480"><br>
-      <em><strong>Global CLAHE.</strong> Background structures are amplified, causing fragmented skeletons and spurious bifurcations.</em>
+      <em><strong>Global CLAHE.</strong> Example output from whole-image enhancement.</em>
     </td>
     <td align="center" width="50%">
       <img src="data/M_02_patchwise.png" width="480"><br>
-      <em><strong>Patch-wise CLAHE.</strong> Local enhancement preserves fine terminal branches while suppressing background noise.</em>
+      <em><strong>Patch-wise CLAHE.</strong> Example output from local enhancement.</em>
     </td>
   </tr>
 </table>
@@ -188,10 +195,13 @@ Classical global CLAHE amplifies both signal and background uniformly, corruptin
 
 <p align="center">
   <img src="data/UIgif.gif" width="1100"><br>
-  <em><strong>Denoising UI.</strong> The optimal <code>h</code> value is estimated mathematically (wavelet sigma estimation) and pre-computed for a ±4 range. The slider updates the skeleton preview instantaneously — no computation lag. The user validates the starting estimate or fine-tunes it before analysis begins.</em>
+  <em><strong>Denoising UI.</strong> A heuristic starting <code>h</code> value is derived from wavelet noise estimation, and previews are pre-computed for a ±4 range. The user reviews or adjusts the estimate before analysis begins.</em>
 </p>
 
-**Scientific rationale:** Non-local Means denoising strength (`h`) critically determines whether fine dendritic processes are preserved or eliminated. A value that is too low leaves noise fragments that corrupt the skeleton; a value that is too high removes real biology. The automated estimation provides a principled, reproducible starting point (Buades et al., 2005).
+**Methodological note:** Non-local Means denoising strength (`h`) affects whether
+fine processes and noise are retained. The desktop interface uses wavelet noise
+estimation as a starting point; this mapping is heuristic and must be visually
+validated. The Streamlit interface starts from a configurable default.
 
 ---
 
@@ -199,7 +209,7 @@ Classical global CLAHE amplifies both signal and background uniformly, corruptin
 
 <p align="center">
   <img src="data/soma_sel_UI.png" width="1100"><br>
-  <em><strong>Soma selection.</strong> The processed image (left) is displayed alongside the final skeleton (right) as a reference. Users click directly on soma cell bodies to define analysis anchors. Coordinates are automatically snapped to the nearest skeleton point to ensure accurate centering.</em>
+  <em><strong>Soma selection.</strong> The processed image (left) is displayed alongside the final skeleton (right) as a reference. Users click directly on soma cell bodies to define analysis anchors. Coordinates are automatically snapped to the nearest skeleton point to provide a repeatable computational anchor; users must verify the selected location.</em>
 </p>
 
 ---
@@ -211,17 +221,21 @@ Classical global CLAHE amplifies both signal and background uniformly, corruptin
   <em><strong>Sholl circle placement.</strong> Concentric circles are generated around each selected soma, extending to the farthest detected endpoint of the connected component.</em>
 </p>
 
-For each cell, the following metrics are extracted:
+For each cell, the following computationally defined metrics are extracted.
+The Sholl intersection counts and ramification index are preliminary software
+measurements, not validated biological ground truth. Their accuracy and
+repeatability must be evaluated against manual annotations or an established
+reference workflow on representative images before scientific use.
 
 | Metric | Description | Reference |
 |---|---|---|
 | `Radius` | Distance from the soma center (px) | Sholl, 1953 |
-| `Intersections` | Number of skeleton crossings at each radius | Sholl, 1953 |
+| `Intersections` | Software-counted skeleton intersections at each radius | Sholl, 1953 |
 | `Fractal_Dimension` | Box-counting fractal dimension of the arbor | Mandelbrot, 1982 |
 | `Lacunarity` | Morphological heterogeneity of the arbor | Plotnick et al., 1996 |
 | `Betweenness_Centrality` | Fraction of shortest paths through each node | Freeman, 1977 |
 | `Closeness_Centrality` | Mean inverse distance to all other nodes | Bavelas, 1950 |
-| `Ramification_Index` | Ratio max/primary branches (Schoenen RI) | Schoenen, 1982 |
+| `Ramification_Index` | Software-defined ratio of maximum intersections to the estimated primary-branch count | Schoenen, 1982 |
 | `Soma_Area` | Area of the detected soma region (px²) | — |
 | `Soma_Circularity` | Shape circularity index [0–1] | — |
 
@@ -240,7 +254,7 @@ Each cell presents a 6-panel dashboard before its data is committed:
 - **Panel C** — Skeleton graph colored by betweenness centrality
 - **Panel D** — Fractal Dimension log-log regression (box-counting)
 - **Panel E** — Per-cell Sholl intersection profile
-- **Panel F** — Metric summary card with biological reference ranges
+- **Panel F** — Metric summary card with configurable QC ranges
 
 The user responds via GUI buttons:
 - **[Accept]** — include this cell in the output CSV
@@ -276,7 +290,7 @@ MASTER_Sholl_Metrics_Batch.csv
   F02_Iba1   |    2    |    4   |       7       |      1.51         | ...
 ```
 
-The `Image_Name` column provides full traceability: every row can be linked back to its source image and soma.
+The `Image_Name` and `Soma_ID` columns identify the source image and selected soma for each row.
 
 ---
 
@@ -319,7 +333,7 @@ MASTER_Sholl_Metrics_Batch.csv         ← Aggregated data from all images
 ## Repository Structure
 
 ```text
-microglia-sholl-pipeline/
+microglia-sholl-pipeline_v2/
 │
 ├── data/                       # Example input images and demo outputs
 │
@@ -338,7 +352,8 @@ microglia-sholl-pipeline/
 │
 ├── merge_sholl_results.py      # Utility to merge per-image CSVs
 │
-├── test_morphology_features.py # Unit tests for morphometric functions
+├── tests/                      # Unit and regression tests
+├── app.py                      # Streamlit interface
 │
 ├── README.md                   # This file
 ├── LICENSE                     # MIT License
@@ -351,8 +366,8 @@ microglia-sholl-pipeline/
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/LorenzoZam/microglia-sholl-pipeline.git
-cd microglia-sholl-pipeline
+git clone https://github.com/LorenzoZam/microglia-sholl-pipeline_v2.git
+cd microglia-sholl-pipeline_v2
 
 # 2. Create a virtual environment (recommended)
 python -m venv venv
@@ -363,7 +378,7 @@ venv\Scripts\activate          # Windows
 pip install -r requirements.txt
 ```
 
-**Python ≥ 3.9 recommended.**
+**CI is configured to test Python 3.10–3.12.**
 
 ---
 
@@ -392,22 +407,44 @@ python plot_sholl_profiles.py
 
 Reads the master CSV and produces population-level curves.
 
+### Streamlit app
+
+```bash
+streamlit run app.py
+```
+
+The web interface accepts TIFF, PNG, and JPEG uploads. Cloud storage is ephemeral;
+download both CSV outputs before ending the session. The configured upload limit
+is 200 MB per file. Do not upload sensitive human data to a public deployment
+without an approved data-handling process.
+
 ---
 
 ## Replicability & Scientific Rationale
 
-MicroSholl is designed with reproducibility as a core constraint — not an afterthought.
+The repository includes the following mechanisms intended to support repeatable analysis:
 
 | Principle | Implementation |
 |---|---|
-| **No undocumented parameters** | All critical parameters (`h`, step size, minimum fragment size) are saved in the terminal log |
-| **Automated, standardized denoising** | `estimate_sigma` provides a noise-level-informed starting point independent of user intuition |
-| **Full audit trail** | Every intermediate image is saved; rejected cells are flagged rather than silently dropped |
+| **Reviewed denoising** | The desktop workflow asks the user to review the selected NLM setting |
+| **Review artifacts** | The desktop workflow saves intermediate images and flags rejected cells |
 | **Per-cell traceability** | Each CSV row can be traced to a specific soma in a specific image via `Image_Name` + `Soma_ID` |
-| **Open dependencies** | All dependencies are open-source, versioned, and well-maintained scientific Python libraries |
-| **Unit-tested morphometrics** | `test_morphology_features.py` provides automated tests for fractal dimension, lacunarity, and graph metrics |
+| **Automated checks** | CI runs baseline scientific-function tests and a Streamlit startup check |
 
-This design means that any result produced by MicroSholl can be **fully reproduced** given the original images and parameter choices.
+Exact reproduction can depend on the operating system and numerical-library
+versions. Archived analyses should therefore preserve the inputs, outputs,
+parameter records, and an exact environment snapshot.
+
+### Scientific limitations
+
+- The pipeline analyzes 2-D images; it does not reconstruct 3-D arbors.
+- Segmentation and gap bridging are heuristic and require dataset-specific validation.
+- Morphology is not synonymous with microglial inflammatory or functional state.
+- The displayed QC ranges are software defaults, not validated biological norms.
+- Cells are nested within images and animals. Treating cells as independent
+  biological replicates is pseudoreplication; define the experimental unit first.
+- Validate agreement and repeatability against manual annotations or an established
+  reference workflow before using measurements as study endpoints.
 
 ---
 
@@ -415,7 +452,7 @@ This design means that any result produced by MicroSholl can be **fully reproduc
 
 | Library | Role |
 |---|---|
-| [Python ≥ 3.9](https://python.org) | Core language |
+| [Python 3.10–3.12](https://python.org) | CI-supported core language versions |
 | [NumPy](https://numpy.org) | Numerical computing |
 | [Pandas](https://pandas.pydata.org) | Data handling and CSV export |
 | [OpenCV](https://opencv.org) | Image I/O, CLAHE, morphological operations |
@@ -425,7 +462,9 @@ This design means that any result produced by MicroSholl can be **fully reproduc
 | [Matplotlib](https://matplotlib.org) | Interactive UI, QC dashboards, Sholl plots |
 | [tkinter](https://docs.python.org/3/library/tkinter.html) | File selection dialogs (stdlib) |
 
-All dependencies and tested versions are listed in `requirements.txt`.
+Runtime dependencies are listed in `requirements.txt`. Development and test
+dependencies are listed separately in `requirements-dev.txt`. Record exact
+installed versions when archiving an analysis.
 
 ---
 
@@ -446,14 +485,14 @@ Images are used exclusively for methodological demonstration and were not modifi
 If you use this pipeline in your research, presentations, or publications, please cite the software as follows:
 
 **APA:**
-> Zammariello, L. (2026). MicroSholl: Advanced Microglia Morphology Analysis Pipeline (v2.0.0). GitHub. https://github.com/LorenzoZam/microglia-sholl-pipeline
+> Zammariello, L. (2026). MicroSholl: Microglia Morphometrics and Batch Sholl Analysis (v2.0.0). GitHub. https://github.com/LorenzoZam/microglia-sholl-pipeline_v2
 
 **BibTeX:**
 ```bibtex
 @software{Zammariello_MicroSholl_2026,
   author = {Zammariello, Lorenzo},
-  title = {{MicroSholl: Advanced Microglia Morphology Analysis Pipeline}},
-  url = {https://github.com/LorenzoZam/microglia-sholl-pipeline},
+  title = {{MicroSholl: Microglia Morphometrics and Batch Sholl Analysis}},
+  url = {https://github.com/LorenzoZam/microglia-sholl-pipeline_v2},
   version = {2.0.0},
   year = {2026}
 }
