@@ -1,7 +1,7 @@
-# 🧠 MicroSholl — Advanced Microglia Morphology Analysis Pipeline
+# 🧠 MicroSholl — Microglia Morphometrics and Batch Sholl Analysis
 
-> **From raw confocal image to publication-ready morphometric data in minutes.**  
-> A Python pipeline for robust, reproducible Sholl analysis of microglial cells, with interactive quality control and batch processing.
+> A Python research pipeline for exploratory 2-D Sholl analysis of microglial
+> images, with interactive quality control and batch processing.
 
 ---
 
@@ -31,7 +31,12 @@
 
 ## Introduction
 
-Microglial morphology is a direct, quantifiable readout of neuroinflammatory state. Ramified microglia with long, branched processes are characteristic of a surveillant, homeostatic phenotype, while amoeboid, process-retracted cells signal activation. Sholl analysis — counting intersections between concentric circles and a skeletonized cell arbor — is the gold-standard method for quantifying this complexity.
+Microglial morphology is a useful quantitative correlate of cellular state, but
+it is not a direct measurement of inflammatory function. Ramification and soma
+shape should be interpreted in the context of species, brain region, staining,
+imaging, and complementary molecular or functional measurements. Sholl analysis
+counts crossings between concentric circles and a reconstructed cell arbor and
+is one established way to describe spatial complexity.
 
 However, standard implementations (e.g., ImageJ/Fiji plugins) suffer from:
 - **Manual, time-consuming workflows** that bottleneck large studies
@@ -39,22 +44,24 @@ However, standard implementations (e.g., ImageJ/Fiji plugins) suffer from:
 - **No built-in quality control**, leading to undetected analysis errors
 - **No traceability**, making it difficult to reproduce or audit results
 
-**MicroSholl** is a semi-automated Python pipeline that solves all of these problems. It combines rigorous, publication-grade image processing with an interactive GUI, enabling neuroscientists to analyze entire experiments in a single session with full traceability.
+**MicroSholl** is a semi-automated Python pipeline intended to make this workflow
+inspectable and easier to repeat. Its outputs require visual QC and experimental
+validation before use in inferential or publication workflows.
 
 ---
 
 ## Why MicroSholl
 
-| Feature | ImageJ Plugin | MicroSholl |
-|---|:---:|:---:|
-| Automated skeleton extraction | ✅ | ✅ |
-| Adaptive noise reduction | ❌ | ✅ |
-| Automated denoising parameter estimation | ❌ | ✅ |
-| Multi-cell batch analysis | ❌ | ✅ |
-| Interactive QC per cell | ❌ | ✅ |
-| Fractal Dimension & graph metrics | ❌ | ✅ |
-| Master CSV across image files | ❌ | ✅ |
-| Full traceability (per-cell images) | ❌ | ✅ |
+| Feature | MicroSholl |
+|---|:---:|
+| Automated skeleton extraction | ✅ |
+| Adaptive noise reduction | ✅ |
+| User-reviewed denoising | ✅ |
+| Multi-cell batch analysis | ✅ |
+| Interactive QC per cell | ✅ |
+| Fractal dimension and graph descriptors | ✅ |
+| Master CSV across image files | ✅ |
+| Per-cell images and parameter metadata | ✅ |
 
 ---
 
@@ -75,7 +82,7 @@ Each cell now receives a full 6-panel quality control dashboard before its data 
 - Skeleton graph (colored by betweenness centrality)
 - Fractal Dimension log-log regression
 - Per-cell Sholl profile curve
-- Metric summary card with biological reference ranges
+- Metric summary card with configurable QC ranges (not biological norms)
 - GUI buttons: **[Accept]**, **[Reject]**, **[Accept All]** — replaces error-prone terminal input
 
 ### 🔬 Extended Morphometric Feature Extraction
@@ -191,7 +198,10 @@ Classical global CLAHE amplifies both signal and background uniformly, corruptin
   <em><strong>Denoising UI.</strong> The optimal <code>h</code> value is estimated mathematically (wavelet sigma estimation) and pre-computed for a ±4 range. The slider updates the skeleton preview instantaneously — no computation lag. The user validates the starting estimate or fine-tunes it before analysis begins.</em>
 </p>
 
-**Scientific rationale:** Non-local Means denoising strength (`h`) critically determines whether fine dendritic processes are preserved or eliminated. A value that is too low leaves noise fragments that corrupt the skeleton; a value that is too high removes real biology. The automated estimation provides a principled, reproducible starting point (Buades et al., 2005).
+**Methodological note:** Non-local Means denoising strength (`h`) affects whether
+fine processes and noise are retained. The desktop interface uses wavelet noise
+estimation as a starting point; this mapping is heuristic and must be visually
+validated. The Streamlit interface starts from a configurable default.
 
 ---
 
@@ -240,7 +250,7 @@ Each cell presents a 6-panel dashboard before its data is committed:
 - **Panel C** — Skeleton graph colored by betweenness centrality
 - **Panel D** — Fractal Dimension log-log regression (box-counting)
 - **Panel E** — Per-cell Sholl intersection profile
-- **Panel F** — Metric summary card with biological reference ranges
+- **Panel F** — Metric summary card with configurable QC ranges
 
 The user responds via GUI buttons:
 - **[Accept]** — include this cell in the output CSV
@@ -287,6 +297,10 @@ Population-level Sholl curves and statistics are computed in `plot_sholl_profile
 - Outlier inspection and removal
 - Condition-level comparisons
 
+Zero-intersection observations are retained in summaries. For inferential work,
+use `Animal_ID` as the biological replicate and preserve a stable cell identifier;
+the optional mixed model includes animal and cell-level random effects.
+
 <p align="center">
   <img src="data/Sham CB.png" width="800"><br>
   <em><strong>Population-level Sholl curves.</strong> Mean ± SEM intersection profiles across all accepted cells in the Sham condition.</em>
@@ -319,7 +333,7 @@ MASTER_Sholl_Metrics_Batch.csv         ← Aggregated data from all images
 ## Repository Structure
 
 ```text
-microglia-sholl-pipeline/
+microglia-sholl-pipeline_v2/
 │
 ├── data/                       # Example input images and demo outputs
 │
@@ -338,7 +352,9 @@ microglia-sholl-pipeline/
 │
 ├── merge_sholl_results.py      # Utility to merge per-image CSVs
 │
-├── test_morphology_features.py # Unit tests for morphometric functions
+├── tests/                      # Unit and regression tests
+├── app.py                      # Streamlit interface
+├── provenance.py               # Machine-readable run metadata
 │
 ├── README.md                   # This file
 ├── LICENSE                     # MIT License
@@ -351,8 +367,8 @@ microglia-sholl-pipeline/
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/LorenzoZam/microglia-sholl-pipeline.git
-cd microglia-sholl-pipeline
+git clone https://github.com/LorenzoZam/microglia-sholl-pipeline_v2.git
+cd microglia-sholl-pipeline_v2
 
 # 2. Create a virtual environment (recommended)
 python -m venv venv
@@ -363,7 +379,7 @@ venv\Scripts\activate          # Windows
 pip install -r requirements.txt
 ```
 
-**Python ≥ 3.9 recommended.**
+**Python 3.10–3.12 is tested in CI.**
 
 ---
 
@@ -392,6 +408,18 @@ python plot_sholl_profiles.py
 
 Reads the master CSV and produces population-level curves.
 
+### Streamlit app
+
+```bash
+streamlit run app.py
+```
+
+The web interface accepts TIFF, PNG, and JPEG uploads. Uploaded files are placed
+in a randomized per-session temporary directory and are deleted when that session
+is restarted. Cloud storage is ephemeral; download both CSV outputs before ending
+the session. The default upload limit is 200 MB per file. Do not upload sensitive
+human data to a public deployment without an approved data-handling process.
+
 ---
 
 ## Replicability & Scientific Rationale
@@ -400,14 +428,28 @@ MicroSholl is designed with reproducibility as a core constraint — not an afte
 
 | Principle | Implementation |
 |---|---|
-| **No undocumented parameters** | All critical parameters (`h`, step size, minimum fragment size) are saved in the terminal log |
-| **Automated, standardized denoising** | `estimate_sigma` provides a noise-level-informed starting point independent of user intuition |
+| **Parameter provenance** | The CLI writes a JSON run manifest; Streamlit exports key parameters with each row |
+| **Reviewed denoising** | The user records and reviews the selected NLM settings |
 | **Full audit trail** | Every intermediate image is saved; rejected cells are flagged rather than silently dropped |
 | **Per-cell traceability** | Each CSV row can be traced to a specific soma in a specific image via `Image_Name` + `Soma_ID` |
-| **Open dependencies** | All dependencies are open-source, versioned, and well-maintained scientific Python libraries |
-| **Unit-tested morphometrics** | `test_morphology_features.py` provides automated tests for fractal dimension, lacunarity, and graph metrics |
+| **Bounded dependencies** | Compatible version ranges are declared and CI tests supported Python versions |
+| **Regression tests** | `tests/` covers Sholl crossings, image borders, small images, identity, and zero retention |
 
-This design means that any result produced by MicroSholl can be **fully reproduced** given the original images and parameter choices.
+The manifest and exported parameters improve computational traceability. Exact
+reproduction can still depend on the operating system and numerical-library
+versions, so archived analyses should preserve the manifest, inputs, outputs,
+and a locked environment.
+
+### Scientific limitations
+
+- The pipeline analyzes 2-D images; it does not reconstruct 3-D arbors.
+- Segmentation and gap bridging are heuristic and require dataset-specific validation.
+- Morphology is not synonymous with microglial inflammatory or functional state.
+- The displayed QC ranges are software defaults, not validated biological norms.
+- Cells are nested within images and animals. Treating cells as independent
+  biological replicates is pseudoreplication; define the experimental unit first.
+- Validate agreement and repeatability against manual annotations or an established
+  reference workflow before using measurements as study endpoints.
 
 ---
 
@@ -425,7 +467,9 @@ This design means that any result produced by MicroSholl can be **fully reproduc
 | [Matplotlib](https://matplotlib.org) | Interactive UI, QC dashboards, Sholl plots |
 | [tkinter](https://docs.python.org/3/library/tkinter.html) | File selection dialogs (stdlib) |
 
-All dependencies and tested versions are listed in `requirements.txt`.
+Compatible dependency ranges are listed in `requirements.txt`; exact versions are
+recorded in each CLI run manifest. Development dependencies are listed separately
+in `requirements-dev.txt`.
 
 ---
 
@@ -446,14 +490,14 @@ Images are used exclusively for methodological demonstration and were not modifi
 If you use this pipeline in your research, presentations, or publications, please cite the software as follows:
 
 **APA:**
-> Zammariello, L. (2026). MicroSholl: Advanced Microglia Morphology Analysis Pipeline (v2.0.0). GitHub. https://github.com/LorenzoZam/microglia-sholl-pipeline
+> Zammariello, L. (2026). MicroSholl: Microglia Morphometrics and Batch Sholl Analysis (v2.0.0). GitHub. https://github.com/LorenzoZam/microglia-sholl-pipeline_v2
 
 **BibTeX:**
 ```bibtex
 @software{Zammariello_MicroSholl_2026,
   author = {Zammariello, Lorenzo},
-  title = {{MicroSholl: Advanced Microglia Morphology Analysis Pipeline}},
-  url = {https://github.com/LorenzoZam/microglia-sholl-pipeline},
+  title = {{MicroSholl: Microglia Morphometrics and Batch Sholl Analysis}},
+  url = {https://github.com/LorenzoZam/microglia-sholl-pipeline_v2},
   version = {2.0.0},
   year = {2026}
 }

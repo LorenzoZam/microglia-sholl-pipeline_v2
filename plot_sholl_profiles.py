@@ -26,6 +26,32 @@ sns.set_theme(style="ticks", context="talk", palette="colorblind")
 # ─── Configuration ──────────────────────────────────────────────────────────
 conversion_factor = 0.56  # 1 pixel = 0.56 µm
 SPLINE_DF = 5             # degrees of freedom for natural cubic spline
+
+
+def add_cell_id(df):
+    """Return a copy with a stable cell identifier across images/animals."""
+    df = df.copy()
+    parts = []
+    for column in ("Animal_ID", "Image_Name", "Image"):
+        if column in df.columns:
+            parts.append(df[column].astype(str))
+    parts.append(df["Soma_ID"].astype(str))
+    cell_id = parts[0]
+    for part in parts[1:]:
+        cell_id = cell_id + "/" + part
+    df["Cell_ID"] = cell_id
+    return df
+
+
+def radius_um(df):
+    """Use row-level calibration when available, otherwise the CLI default."""
+    if "Radius (µm)" in df.columns:
+        return pd.to_numeric(df["Radius (µm)"], errors="coerce")
+    if "Pixel size (µm/px)" in df.columns:
+        return df["Radius"] * pd.to_numeric(
+            df["Pixel size (µm/px)"], errors="coerce"
+        )
+    return df["Radius"] * conversion_factor
 # ────────────────────────────────────────────────────────────────────────────
 
 
@@ -38,6 +64,7 @@ def load_dataframe(file_path):
     for sep in [",", "\t"]:
         try:
             df = pd.read_csv(file_path, sep=sep)
+            df = df.rename(columns={"Radius (px)": "Radius", "Cell": "Soma_ID"})
             if {"Intersections", "Soma_ID", "Radius"}.issubset(df.columns):
                 return df
         except Exception:
@@ -49,17 +76,17 @@ def load_dataframe(file_path):
 
 
 def load_and_process_data(file_path):
-    """Load, filter zeros, and compute mean±SEM by radius."""
+    """Load data and compute mean ± SEM by radius, retaining zeroes."""
     df = load_dataframe(file_path)
-    df = df[df["Intersections"] > 0]
-
-    stats = df.groupby("Radius")["Intersections"].agg(
+    df = add_cell_id(df)
+    df["Radius_um"] = radius_um(df)
+    stats = df.groupby("Radius_um")["Intersections"].agg(
         ["mean", "std", "count"]
     ).reset_index()
     stats["std"] = stats["std"].fillna(0)
     stats["sem"] = stats["std"] / np.sqrt(stats["count"])
 
-    radii = stats["Radius"] * conversion_factor
+    radii = stats["Radius_um"]
     return radii, stats["mean"], stats["sem"]
 
 
@@ -74,8 +101,8 @@ def plot_comparison_curve_simple(file_paths, labels, colors):
     for file, lbl, color in zip(file_paths, labels, colors):
         radii, mean, sem = load_and_process_data(file)
         df = load_dataframe(file)
-        df = df[df["Intersections"] > 0]
-        n = df["Soma_ID"].nunique()
+        df = add_cell_id(df)
+        n = df["Cell_ID"].nunique()
         label_with_n = f"{lbl} (n={n})"
 
         plt.plot(radii, mean, marker='o', markersize=5, linestyle='-', linewidth=2.5,
@@ -135,7 +162,8 @@ def fit_mixed_effects_sholl(df, spline_df=SPLINE_DF):
 
     # Prepare data
     df = df.copy()
-    df["Radius_um"] = df["Radius"] * conversion_factor
+    df = add_cell_id(df)
+    df["Radius_um"] = radius_um(df)
     df["Intersections"] = df["Intersections"].astype(float)
 
     # Ensure required columns
@@ -160,7 +188,10 @@ def fit_mixed_effects_sholl(df, spline_df=SPLINE_DF):
     print(f"  N groups:       {df['Group'].nunique()}")
     print("=" * 70)
 
-    model = smf.mixedlm(formula, data=df, groups=df["Animal_ID"])
+    model = smf.mixedlm(
+        formula, data=df, groups=df["Animal_ID"],
+        vc_formula={"Cell": "0 + C(Cell_ID)"},
+    )
     result = model.fit(reml=True)
 
     print(result.summary())
@@ -177,7 +208,7 @@ def fit_mixed_effects_sholl(df, spline_df=SPLINE_DF):
 
 def plot_mixed_effects_curves(df, result, colors=None):
     """
-    Plot model-predicted Sholl curves per Group with 95% CI.
+    Plot fixed-effect model predictions with raw mean ± SEM overlays.
 
     Parameters
     ----------
@@ -189,7 +220,8 @@ def plot_mixed_effects_curves(df, result, colors=None):
         Colours per group.
     """
     df = df.copy()
-    df["Radius_um"] = df["Radius"] * conversion_factor
+    df = add_cell_id(df)
+    df["Radius_um"] = radius_um(df)
     groups = sorted(df["Group"].unique())
 
     if colors is None:
@@ -227,7 +259,7 @@ def plot_mixed_effects_curves(df, result, colors=None):
             raw_stats = raw_grp.agg(["mean", "std", "count"]).reset_index()
             raw_stats["sem"] = raw_stats["std"] / np.sqrt(raw_stats["count"])
 
-        n_cells = grp_data["Soma_ID"].nunique()
+        n_cells = grp_data["Cell_ID"].nunique()
         n_animals = grp_data["Animal_ID"].nunique()
 
         # Plot predicted curve
@@ -372,7 +404,8 @@ def plot_morphometric_summary(file_paths, labels, colors):
         if not present_cols:
             print(f"  No morphometric columns found in {fp}, skipping.")
             continue
-        cell_df = df.groupby("Soma_ID")[present_cols].first().reset_index()
+        df = add_cell_id(df)
+        cell_df = df.groupby("Cell_ID")[present_cols].first().reset_index()
         cell_df["Group"] = lbl
         all_data.append(cell_df)
 
@@ -438,8 +471,9 @@ def plot_morphometric_summary(file_paths, labels, colors):
 
 def calculate_auc_per_soma(df):
     aucs = {}
-    for soma_id, group in df.groupby("Soma_ID"):
-        radii = group["Radius"].values * conversion_factor
+    df = add_cell_id(df)
+    for soma_id, group in df.groupby("Cell_ID"):
+        radii = radius_um(group).values
         intersections = group["Intersections"].values
         auc = scipy.integrate.trapezoid(intersections, radii) if len(radii) > 1 else 0
         aucs[soma_id] = auc
@@ -448,8 +482,9 @@ def calculate_auc_per_soma(df):
 
 def detect_outliers(df, method='iqr', threshold=1.5, metric='max_radius'):
     if metric == 'max_radius':
-        values = [(sid, g["Radius"].max() * conversion_factor)
-                  for sid, g in df.groupby("Soma_ID")]
+        df = add_cell_id(df)
+        values = [(sid, radius_um(g).max())
+                  for sid, g in df.groupby("Cell_ID")]
     elif metric == 'auc':
         values = list(calculate_auc_per_soma(df).items())
     else:
@@ -466,7 +501,8 @@ def detect_outliers(df, method='iqr', threshold=1.5, metric='max_radius'):
 
 
 def filter_outliers(df, outliers):
-    return df[~df["Soma_ID"].isin(outliers)]
+    identified = add_cell_id(df)
+    return identified[~identified["Cell_ID"].isin(outliers)]
 
 
 # ===========================================================================
@@ -569,8 +605,6 @@ if __name__ == "__main__":
             all_dfs.append(df)
 
         combined = pd.concat(all_dfs, ignore_index=True)
-        combined = combined[combined["Intersections"] > 0]
-
         # Fit and plot
         result = fit_mixed_effects_sholl(combined, spline_df=SPLINE_DF)
         plot_mixed_effects_curves(combined, result, colors)

@@ -17,7 +17,7 @@ from tkinter import filedialog
 
 # --- Configuration -----------------------------------------------------------
 # The regex extracts the Animal_ID from the source filename.
-# Default pattern: take everything before the LAST underscore.
+# Default pattern: take everything before the first underscore.
 #   e.g.  "Sham1_image02.csv"  ->  Animal_ID = "Sham1"
 #         "TBI3_slice4.csv"    ->  Animal_ID = "TBI3"
 # Adjust the pattern below if your naming convention is different.
@@ -88,7 +88,8 @@ for file, group in zip(csv_files, group_labels):
             f"Available columns: {df.columns.tolist()}"
         )
 
-    # Reassign Soma_IDs to avoid conflicts
+    # Preserve the source ID and assign a stable cross-file Cell_ID.
+    df['Source_Soma_ID'] = df['Soma_ID']
     old_ids = df['Soma_ID'].unique()
     id_map = {old: new for old, new in
               zip(old_ids, range(last_soma_id + 1,
@@ -103,6 +104,8 @@ for file, group in zip(csv_files, group_labels):
     # Add Animal_ID (from filename) and Group (from user input)
     df['Animal_ID'] = extract_animal_id(file)
     df['Group'] = group
+    source_name = os.path.splitext(os.path.basename(file))[0]
+    df['Cell_ID'] = source_name + "/" + df['Source_Soma_ID'].astype(str)
 
     print(f"  Animal_ID = '{df['Animal_ID'].iloc[0]}',  Group = '{group}'")
     dataframes.append(df)
