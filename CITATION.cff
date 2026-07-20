@@ -3,7 +3,14 @@ message: "If you use this software, please cite it as below."
 authors:
 - family-names: "Zammariello"
   given-names: "Lorenzo"
-title: "MicroSholl: Interactive Microglia Morphometrics & Batch Sholl Analysis"
+title: "MicroSholl: Microglia Morphometrics and Batch Sholl Analysis"
 version: 2.0.0
 date-published: 2026-05-04
-url: "https://github.com/LorenzoZam/microglia-sholl-pipeline"
+url: "https://github.com/LorenzoZam/microglia-sholl-pipeline_v2"
+repository-code: "https://github.com/LorenzoZam/microglia-sholl-pipeline_v2"
+license: MIT
+keywords:
+  - microglia
+  - Sholl analysis
+  - image analysis
+  - morphometrics

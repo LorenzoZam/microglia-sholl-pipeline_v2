@@ -26,6 +26,32 @@ sns.set_theme(style="ticks", context="talk", palette="colorblind")
 # ─── Configuration ──────────────────────────────────────────────────────────
 conversion_factor = 0.56  # 1 pixel = 0.56 µm
 SPLINE_DF = 5             # degrees of freedom for natural cubic spline
+
+
+def add_cell_id(df):
+    """Return a copy with a stable cell identifier across images/animals."""
+    df = df.copy()
+    parts = []
+    for column in ("Animal_ID", "Image_Name", "Image"):
+        if column in df.columns:
+            parts.append(df[column].astype(str))
+    parts.append(df["Soma_ID"].astype(str))
+    cell_id = parts[0]
+    for part in parts[1:]:
+        cell_id = cell_id + "/" + part
+    df["Cell_ID"] = cell_id
+    return df
+
+
+def radius_um(df):
+    """Use row-level calibration when available, otherwise the CLI default."""
+    if "Radius (µm)" in df.columns:
+        return pd.to_numeric(df["Radius (µm)"], errors="coerce")
+    if "Pixel size (µm/px)" in df.columns:
+        return df["Radius"] * pd.to_numeric(
+            df["Pixel size (µm/px)"], errors="coerce"
+        )
+    return df["Radius"] * conversion_factor
 # ────────────────────────────────────────────────────────────────────────────
 
 
@@ -38,6 +64,7 @@ def load_dataframe(file_path):
     for sep in [",", "\t"]:
         try:
             df = pd.read_csv(file_path, sep=sep)
+            df = df.rename(columns={"Radius (px)": "Radius", "Cell": "Soma_ID"})
             if {"Intersections", "Soma_ID", "Radius"}.issubset(df.columns):
                 return df
         except Exception:
@@ -49,17 +76,17 @@ def load_dataframe(file_path):
 
 
 def load_and_process_data(file_path):
-    """Load, filter zeros, and compute mean±SEM by radius."""
+    """Load data and compute mean ± SEM by radius, retaining zeroes."""
     df = load_dataframe(file_path)
-    df = df[df["Intersections"] > 0]
-
-    stats = df.groupby("Radius")["Intersections"].agg(
+    df = add_cell_id(df)
+    df["Radius_um"] = radius_um(df)
+    stats = df.groupby("Radius_um")["Intersections"].agg(
         ["mean", "std", "count"]
     ).reset_index()
     stats["std"] = stats["std"].fillna(0)
     stats["sem"] = stats["std"] / np.sqrt(stats["count"])
 
-    radii = stats["Radius"] * conversion_factor
+    radii = stats["Radius_um"]
     return radii, stats["mean"], stats["sem"]
 
 
@@ -74,8 +101,8 @@ def plot_comparison_curve_simple(file_paths, labels, colors):
     for file, lbl, color in zip(file_paths, labels, colors):
         radii, mean, sem = load_and_process_data(file)
         df = load_dataframe(file)
-        df = df[df["Intersections"] > 0]
-        n = df["Soma_ID"].nunique()
+        df = add_cell_id(df)
+        n = df["Cell_ID"].nunique()
         label_with_n = f"{lbl} (n={n})"
 
         plt.plot(radii, mean, marker='o', markersize=5, linestyle='-', linewidth=2.5,
@@ -100,17 +127,94 @@ def plot_comparison_curve_simple(file_paths, labels, colors):
 #  Mixed-effects Sholl model
 # ===========================================================================
 
+def _validate_mixed_model_input(df, spline_df):
+    """Validate identifiers and observations required by the mixed model."""
+    if df["Group"].nunique(dropna=False) < 2:
+        raise ValueError("Mixed-effects modeling requires at least two groups.")
+
+    animal_group_counts = df.groupby("Animal_ID", dropna=False)["Group"].nunique(
+        dropna=False
+    )
+    invalid_animals = animal_group_counts[animal_group_counts > 1].index.tolist()
+    if invalid_animals:
+        raise ValueError(
+            "Each Animal_ID must belong to exactly one Group; conflicting "
+            f"animals: {invalid_animals}"
+        )
+
+    cell_animal_counts = df.groupby("Cell_ID", dropna=False)["Animal_ID"].nunique(
+        dropna=False
+    )
+    invalid_cells = cell_animal_counts[cell_animal_counts > 1].index.tolist()
+    if invalid_cells:
+        raise ValueError(
+            "Each Cell_ID must belong to exactly one Animal_ID; conflicting "
+            f"cells: {invalid_cells}"
+        )
+
+    intersection_values = df["Intersections"].to_numpy(dtype=float)
+    if not np.isfinite(intersection_values).all() or (intersection_values < 0).any():
+        raise ValueError("Intersections must be finite and non-negative.")
+
+    radius_values = df["Radius_um"].to_numpy(dtype=float)
+    if not np.isfinite(radius_values).all() or (radius_values <= 0).any():
+        raise ValueError("Radius_um values must be finite and positive.")
+
+    duplicates = df.duplicated(subset=["Cell_ID", "Radius_um"], keep=False)
+    if duplicates.any():
+        duplicate_rows = df.loc[duplicates, ["Cell_ID", "Radius_um"]]
+        examples = duplicate_rows.drop_duplicates().head(5).to_dict("records")
+        raise ValueError(
+            "Duplicate Cell_ID x Radius_um observations detected; each cell "
+            f"may have only one observation per radius. Examples: {examples}"
+        )
+
+    distinct_radii = df["Radius_um"].nunique()
+    if distinct_radii < spline_df:
+        raise ValueError(
+            f"Natural cubic spline df={spline_df} requires at least "
+            f"{spline_df} distinct Radius_um values; found {distinct_radii}."
+        )
+
+
+def _mixed_model_variance_summary(result):
+    """Extract fitted variances and correlations from a mixed-model result."""
+    animal_variance = float(result.cov_re.iloc[0, 0])
+    variance_components = np.asarray(result.vcomp, dtype=float).ravel()
+    if variance_components.size < 1:
+        raise ValueError("Fitted result does not contain the Cell variance component.")
+    cell_variance = float(variance_components[0])
+    residual_variance = float(result.scale)
+    total_variance = animal_variance + cell_variance + residual_variance
+    if not np.isfinite(total_variance) or total_variance <= 0:
+        raise ValueError("Total fitted variance must be finite and positive.")
+
+    return {
+        "animal_variance": animal_variance,
+        "cell_variance": cell_variance,
+        "residual_variance": residual_variance,
+        "total_variance": total_variance,
+        "animal_level_icc": animal_variance / total_variance,
+        "within_cell_correlation": (
+            animal_variance + cell_variance
+        ) / total_variance,
+    }
+
+
 def fit_mixed_effects_sholl(df, spline_df=SPLINE_DF):
     """
     Fit a Hierarchical Mixed-Effects Model to Sholl intersection data.
 
     Model:
         Intersections ~ cr(Radius_um, df) * C(Group)
-        Random effect:  (1 | Animal_ID)
+        Animal random intercept: (1 | Animal_ID)
+        Cell-within-animal variance component: 0 + C(Cell_ID)
+        Residual: Gaussian with a common residual variance
 
     Uses Natural Cubic Splines (patsy ``cr()``) to model the non-linear
     relationship between radius and intersections, with Group as a
-    categorical fixed effect and Animal_ID as random intercepts.
+    categorical fixed effect. The Gaussian linear mixed model is fitted by
+    restricted maximum likelihood (REML).
 
     Parameters
     ----------
@@ -135,16 +239,30 @@ def fit_mixed_effects_sholl(df, spline_df=SPLINE_DF):
 
     # Prepare data
     df = df.copy()
-    df["Radius_um"] = df["Radius"] * conversion_factor
-    df["Intersections"] = df["Intersections"].astype(float)
-
-    # Ensure required columns
     for col in ("Animal_ID", "Group"):
         if col not in df.columns:
             raise ValueError(
                 f"Column '{col}' not found.  Run merge_sholl_results.py first "
                 "to generate Animal_ID and Group columns."
             )
+
+    if "Cell_ID" in df.columns:
+        original_cell_animal_counts = df.groupby(
+            "Cell_ID", dropna=False
+        )["Animal_ID"].nunique(dropna=False)
+        invalid_original_cells = original_cell_animal_counts[
+            original_cell_animal_counts > 1
+        ].index.tolist()
+        if invalid_original_cells:
+            raise ValueError(
+                "Each Cell_ID must belong to exactly one Animal_ID; conflicting "
+                f"cells: {invalid_original_cells}"
+            )
+
+    df = add_cell_id(df)
+    df["Radius_um"] = radius_um(df)
+    df["Intersections"] = df["Intersections"].astype(float)
+    _validate_mixed_model_input(df, spline_df)
 
     # Build formula with natural cubic spline × Group interaction
     formula = (
@@ -154,30 +272,42 @@ def fit_mixed_effects_sholl(df, spline_df=SPLINE_DF):
     print("\n" + "=" * 70)
     print("Fitting Hierarchical Mixed-Effects Model")
     print(f"  Formula:  {formula}")
-    print(f"  Random effect:  (1 | Animal_ID)")
+    print(f"  Animal random intercept:          (1 | Animal_ID)")
+    print(f"  Cell-within-animal component:     0 + C(Cell_ID)")
+    print(f"  Residual distribution:            Gaussian")
+    print(f"  Fitting method:                   REML")
     print(f"  N observations: {len(df)}")
     print(f"  N animals:      {df['Animal_ID'].nunique()}")
     print(f"  N groups:       {df['Group'].nunique()}")
     print("=" * 70)
 
-    model = smf.mixedlm(formula, data=df, groups=df["Animal_ID"])
+    model = smf.mixedlm(
+        formula, data=df, groups=df["Animal_ID"],
+        vc_formula={"Cell": "0 + C(Cell_ID)"},
+    )
     result = model.fit(reml=True)
 
     print(result.summary())
 
-    # Intra-class correlation (ICC)
-    var_animal = float(result.cov_re.iloc[0, 0])
-    var_resid = float(result.scale)
-    icc = var_animal / (var_animal + var_resid)
-    print(f"\nIntra-class Correlation (ICC):  {icc:.4f}")
-    print(f"  → {icc*100:.1f}% of residual variance is between animals")
+    variance = _mixed_model_variance_summary(result)
+    print("\nVariance components:")
+    print(f"  Animal variance:                 {variance['animal_variance']:.6g}")
+    print(f"  Cell-within-animal variance:     {variance['cell_variance']:.6g}")
+    print(f"  Residual variance:               {variance['residual_variance']:.6g}")
+    print(f"  Total variance:                  {variance['total_variance']:.6g}")
+    print("Correlations:")
+    print(f"  Animal-level ICC:                {variance['animal_level_icc']:.4f}")
+    print(
+        "  Within-cell correlation:         "
+        f"{variance['within_cell_correlation']:.4f}"
+    )
 
     return result
 
 
 def plot_mixed_effects_curves(df, result, colors=None):
     """
-    Plot model-predicted Sholl curves per Group with 95% CI.
+    Plot fixed-effect model predictions with raw mean ± SEM overlays.
 
     Parameters
     ----------
@@ -189,7 +319,8 @@ def plot_mixed_effects_curves(df, result, colors=None):
         Colours per group.
     """
     df = df.copy()
-    df["Radius_um"] = df["Radius"] * conversion_factor
+    df = add_cell_id(df)
+    df["Radius_um"] = radius_um(df)
     groups = sorted(df["Group"].unique())
 
     if colors is None:
@@ -227,7 +358,7 @@ def plot_mixed_effects_curves(df, result, colors=None):
             raw_stats = raw_grp.agg(["mean", "std", "count"]).reset_index()
             raw_stats["sem"] = raw_stats["std"] / np.sqrt(raw_stats["count"])
 
-        n_cells = grp_data["Soma_ID"].nunique()
+        n_cells = grp_data["Cell_ID"].nunique()
         n_animals = grp_data["Animal_ID"].nunique()
 
         # Plot predicted curve
@@ -372,7 +503,8 @@ def plot_morphometric_summary(file_paths, labels, colors):
         if not present_cols:
             print(f"  No morphometric columns found in {fp}, skipping.")
             continue
-        cell_df = df.groupby("Soma_ID")[present_cols].first().reset_index()
+        df = add_cell_id(df)
+        cell_df = df.groupby("Cell_ID")[present_cols].first().reset_index()
         cell_df["Group"] = lbl
         all_data.append(cell_df)
 
@@ -438,8 +570,9 @@ def plot_morphometric_summary(file_paths, labels, colors):
 
 def calculate_auc_per_soma(df):
     aucs = {}
-    for soma_id, group in df.groupby("Soma_ID"):
-        radii = group["Radius"].values * conversion_factor
+    df = add_cell_id(df)
+    for soma_id, group in df.groupby("Cell_ID"):
+        radii = radius_um(group).values
         intersections = group["Intersections"].values
         auc = scipy.integrate.trapezoid(intersections, radii) if len(radii) > 1 else 0
         aucs[soma_id] = auc
@@ -448,8 +581,9 @@ def calculate_auc_per_soma(df):
 
 def detect_outliers(df, method='iqr', threshold=1.5, metric='max_radius'):
     if metric == 'max_radius':
-        values = [(sid, g["Radius"].max() * conversion_factor)
-                  for sid, g in df.groupby("Soma_ID")]
+        df = add_cell_id(df)
+        values = [(sid, radius_um(g).max())
+                  for sid, g in df.groupby("Cell_ID")]
     elif metric == 'auc':
         values = list(calculate_auc_per_soma(df).items())
     else:
@@ -466,7 +600,8 @@ def detect_outliers(df, method='iqr', threshold=1.5, metric='max_radius'):
 
 
 def filter_outliers(df, outliers):
-    return df[~df["Soma_ID"].isin(outliers)]
+    identified = add_cell_id(df)
+    return identified[~identified["Cell_ID"].isin(outliers)]
 
 
 # ===========================================================================
@@ -569,8 +704,6 @@ if __name__ == "__main__":
             all_dfs.append(df)
 
         combined = pd.concat(all_dfs, ignore_index=True)
-        combined = combined[combined["Intersections"] > 0]
-
         # Fit and plot
         result = fit_mixed_effects_sholl(combined, spline_df=SPLINE_DF)
         plot_mixed_effects_curves(combined, result, colors)

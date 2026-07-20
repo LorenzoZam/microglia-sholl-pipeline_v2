@@ -23,6 +23,7 @@ from morphology_features import (
     generate_backtrace_overlay,
     generate_qc_dashboard,
 )
+from provenance import build_manifest, write_manifest
 
 # Sholl Analysis Pipeline for Neuronal Morphology from Microscopy Images
 # This script implements an automated Sholl analysis workflow for quantifying dendritic arborization in neuronal or microglial cells from grayscale microscopy images.
@@ -131,6 +132,8 @@ def apply_adaptive_patching(image, global_var, entropy_thresh=4, stride_ratio=0.
     Concurrent processing accelerates computation for large images.
     """
     h, w = image.shape
+    if h < 8 or w < 8:
+        raise ValueError("Input image must be at least 8 × 8 pixels")
     min_patch_size = 8  # CLAHE tile size
 
     # Calculate padding needed to make both dimensions multiples of min_patch_size
@@ -162,11 +165,13 @@ def apply_adaptive_patching(image, global_var, entropy_thresh=4, stride_ratio=0.
     for y in range(0, ph, stride):
         for x in range(0, pw, stride):
             # Always use full patch size for entropy calculation
-            y0 = min(y, ph - 168)
-            x0 = min(x, pw - 168)
-            patch = padded_image[y0:y0+168, x0:x0+168]
+            entropy_size = min(168, ph, pw)
+            y0 = max(0, min(y, ph - entropy_size))
+            x0 = max(0, min(x, pw - entropy_size))
+            patch = padded_image[y0:y0+entropy_size, x0:x0+entropy_size]
             patch_entropy = shannon_entropy(patch)
-            patch_size = 84 if patch_entropy < entropy_thresh else 168
+            requested_size = 84 if patch_entropy < entropy_thresh else 168
+            patch_size = min(requested_size, ph, pw)
             tasks.append((y, x, patch_size))
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -575,9 +580,11 @@ def find_endpoints(skeleton, component_mask=None):
     endpoints = []
     skeleton = (skeleton > 0).astype(np.float32)
     
+    height, width = skeleton.shape
     for r, c in zip(*np.where(skeleton)):
         # 3x3 window around the selected pixel (r, c)
-        window = skeleton[r-1:r+2, c-1:c+2]
+        window = skeleton[max(0, r-1):min(height, r+2),
+                          max(0, c-1):min(width, c+2)]
         # Count the number of neighbors
         neighbors = np.sum(window) - 1  # Subtract 1 to exclude the center pixel
         
@@ -639,7 +646,7 @@ def compute_sholl_intersections(skeleton, soma_x, soma_y, radii):
     """
     Compute Sholl intersections for given radii.
     
-    Counts skeleton pixels within narrow bands around each radius.
+    Counts skeleton edges that cross each radius.
     
     Parameters:
     - skeleton (np.ndarray): Skeleton image (or component mask).
@@ -651,11 +658,43 @@ def compute_sholl_intersections(skeleton, soma_x, soma_y, radii):
     
     Scientific Rationale: Intersection counting measures dendritic complexity, a key metric in neurobiology (Ristanović et al., 2006).
     """
+    skel = np.asarray(skeleton, dtype=bool)
     intersections = np.zeros(len(radii), dtype=int)
-    skel_points = np.column_stack(np.where(skeleton))
-    distances = np.sqrt((skel_points[:, 0] - soma_y) ** 2 + (skel_points[:, 1] - soma_x) ** 2)
-    for i, radius in enumerate(radii):
-        intersections[i] = np.sum((distances >= radius - 0.5) & (distances < radius + 0.5))
+    if not skel.any():
+        return intersections
+
+    yy, xx = np.indices(skel.shape)
+    radial_distance = np.hypot(xx - soma_x, yy - soma_y)
+
+    # Visit every undirected 8-connected skeleton edge exactly once. An edge
+    # crosses a circle when its endpoints lie on opposite sides. Counting
+    # edges avoids the orientation-dependent over-counting caused by counting
+    # every skeleton pixel in a radial band.
+    forward_offsets = ((0, 1), (1, -1), (1, 0), (1, 1))
+    edge_distances = []
+    height, width = skel.shape
+    for dy, dx in forward_offsets:
+        y0 = slice(max(0, -dy), min(height, height - dy))
+        x0 = slice(max(0, -dx), min(width, width - dx))
+        y1 = slice(max(0, dy), min(height, height + dy))
+        x1 = slice(max(0, dx), min(width, width + dx))
+        connected = skel[y0, x0] & skel[y1, x1]
+        if connected.any():
+            edge_distances.append(
+                (radial_distance[y0, x0][connected],
+                 radial_distance[y1, x1][connected])
+            )
+
+    for index, radius in enumerate(np.asarray(radii, dtype=float)):
+        count = 0
+        for d0, d1 in edge_distances:
+            # Half-open convention assigns a vertex lying exactly on a circle
+            # once and avoids double-counting its adjacent radial edge.
+            count += int(np.count_nonzero(
+                ((d0 < radius) & (d1 >= radius)) |
+                ((d1 < radius) & (d0 >= radius))
+            ))
+        intersections[index] = count
     return intersections
 
 def get_filename_without_extension(file_path):
@@ -854,6 +893,19 @@ def main():
         cv2.imwrite(os.path.join(output_dir, f"{filename_prefix}_den_th_image.png"), den_th_image)
         cv2.imwrite(os.path.join(output_dir, f"{filename_prefix}_binary.png"), binary)
         cv2.imwrite(os.path.join(output_dir, f"{filename_prefix}_skeleton.png"), skeleton)
+        write_manifest(
+            os.path.join(output_dir, f"{filename_prefix}_run_manifest.json"),
+            build_manifest(file_path, {
+                "nlm_h": h_used,
+                "nlm_template_window_px": 7,
+                "nlm_search_window_px": 21,
+                "sholl_step_px": step_size,
+                "extra_circles": extra_circles,
+                "top_hat_kernel_px": 35,
+                "minimum_fragment_px": 3,
+                "bridge_distances_px": [5, 12],
+            }),
+        )
 
         # Visualization of soma and radii
         plt.imshow(skeleton, cmap='gray')

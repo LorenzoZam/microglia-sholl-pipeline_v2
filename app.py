@@ -6,6 +6,8 @@ import seaborn as sns
 import pandas as pd
 import os
 import shutil
+import uuid
+import copy
 from pathlib import Path
 from streamlit_image_coordinates import streamlit_image_coordinates
 
@@ -33,7 +35,7 @@ CROP_MARGIN_FACTOR = 1.3
 DEFAULT_UM_PER_PX  = 0.56
 SOMA_GREEN         = (50, 205, 50)
 
-# Biological reference ranges for flag coloring
+# Configurable software QC ranges; these are not biological reference intervals.
 BIO_RANGES = {
     "fd":        (0.7,  1.8),
     "lac":       (1.0,  10.0),
@@ -57,7 +59,7 @@ def _metric_badge(col, label, value, fmt, key, unit=""):
         color = _flag_color(value, lo, hi)
         col.markdown(
             f"<div style='font-size:0.72rem;color:{color};margin-top:-14px'>"
-            f"{'✔ normal' if color=='green' else '⚠ outside ref'}</div>",
+            f"{'within QC range' if color=='green' else 'outside QC range'}</div>",
             unsafe_allow_html=True,
         )
 
@@ -80,9 +82,8 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────
 # TEMP BATCH DIR
 # ─────────────────────────────────────────────────────────────
-BATCH_TEMP_DIR = Path(__file__).parent / ".tmp_batch"
-if not BATCH_TEMP_DIR.exists():
-    BATCH_TEMP_DIR.mkdir(exist_ok=True)
+BATCH_TEMP_ROOT = Path(__file__).parent / ".tmp_batch"
+BATCH_TEMP_ROOT.mkdir(exist_ok=True)
 
 # ─────────────────────────────────────────────────────────────
 # SESSION STATE
@@ -99,11 +100,14 @@ _defaults = dict(
     last_click1=None, last_click2=None,
     rejected_cells=set(),
     step_size=4, um_per_px=DEFAULT_UM_PER_PX,
+    h_val=9, template_window=7, search_window=21,
     confirm_restart=False,
 )
 for k, v in _defaults.items():
     if k not in st.session_state:
-        st.session_state[k] = v
+        st.session_state[k] = copy.deepcopy(v)
+if "session_id" not in st.session_state:
+    st.session_state.session_id = uuid.uuid4().hex
 
 def undo_last():
     if st.session_state.soma_points:
@@ -112,17 +116,21 @@ def undo_last():
 def clear_all():
     st.session_state.soma_points = []
 
-def accept_all(step_size_val, um_per_px_val):
+def accept_all(step_size_val, um_per_px_val, h_val, template_window, search_window):
     st.session_state.step_size = step_size_val
     st.session_state.um_per_px = um_per_px_val
+    st.session_state.h_val = h_val
+    st.session_state.template_window = template_window
+    st.session_state.search_window = search_window
     st.session_state.ui_mode   = "qc"
 
 def _do_restart():
+    old_session_dir = BATCH_TEMP_ROOT / st.session_state.session_id
     for k, v in _defaults.items():
-        st.session_state[k] = v if not isinstance(v, (list, set, dict)) else type(v)()
-    if BATCH_TEMP_DIR.exists():
-        shutil.rmtree(BATCH_TEMP_DIR)
-        BATCH_TEMP_DIR.mkdir(exist_ok=True)
+        st.session_state[k] = copy.deepcopy(v)
+    if old_session_dir.exists():
+        shutil.rmtree(old_session_dir)
+    st.session_state.session_id = uuid.uuid4().hex
 
 # ─────────────────────────────────────────────────────────────
 # PROGRESS INDICATOR
@@ -252,6 +260,7 @@ if st.session_state.ui_mode == "queue_setup":
                         btn_label = "Use" if st.session_state.workflow_mode == "Single Image" else "➕ Add"
                         if col.button(btn_label, key=f"btn_{name}"):
                             st.session_state.experiment_queue.append({
+                                "queue_id": uuid.uuid4().hex,
                                 "type": "sample",
                                 "filename": name,
                                 "path": str(path),
@@ -273,12 +282,16 @@ if st.session_state.ui_mode == "queue_setup":
                 btn_label = "Start Analysis" if st.session_state.workflow_mode == "Single Image" else "➕ Add Uploads to Queue"
                 if st.button(btn_label, type="primary"):
                     for f in uploaded_files:
-                        path = BATCH_TEMP_DIR / f.name
+                        session_dir = BATCH_TEMP_ROOT / st.session_state.session_id
+                        session_dir.mkdir(exist_ok=True)
+                        safe_name = Path(f.name).name
+                        path = session_dir / f"{uuid.uuid4().hex}_{safe_name}"
                         with open(path, "wb") as out_f:
                             out_f.write(f.read())
                         st.session_state.experiment_queue.append({
+                            "queue_id": uuid.uuid4().hex,
                             "type": "upload",
-                            "filename": f.name,
+                                "filename": safe_name,
                             "path": str(path),
                             "group": target_group
                         })
@@ -317,6 +330,7 @@ if st.session_state.ui_mode in ["selecting", "qc"]:
         st.rerun()
         
     current_item = st.session_state.experiment_queue[st.session_state.current_queue_idx]
+    current_item.setdefault("queue_id", uuid.uuid4().hex)
     img_color = cv2.imread(current_item["path"], cv2.IMREAD_COLOR)
     img_gray  = cv2.imread(current_item["path"], cv2.IMREAD_GRAYSCALE)
     if img_color is None or img_gray is None:
@@ -340,14 +354,14 @@ if st.session_state.ui_mode == "selecting":
         st.markdown("---")
         st.markdown("#### 🎛️ Denoising & Analysis Parameters")
         c1, c2, c3 = st.columns(3)
-        h_val       = c1.slider("NLM Parameter (h)", min_value=1, max_value=20, value=9)
+        h_val       = c1.slider("NLM Parameter (h)", min_value=1, max_value=20, value=st.session_state.h_val)
         step_size_w = int(c2.number_input("Sholl Step Size (px)", min_value=1, max_value=50, value=st.session_state.step_size))
         um_per_px_w = float(c3.number_input("Pixel size (µm/px)", min_value=0.01, max_value=10.0, value=st.session_state.um_per_px, step=0.01))
 
         with st.expander("⚙️ Advanced Pipeline Settings", expanded=False):
             adv1, adv2, adv3 = st.columns(3)
-            tmpl_win   = adv1.slider("NLM Template Window (px)", 5, 15, 7, step=2)
-            search_win = adv2.slider("NLM Search Window (px)", 11, 31, 21, step=2)
+            tmpl_win   = adv1.slider("NLM Template Window (px)", 5, 15, st.session_state.template_window, step=2)
+            search_win = adv2.slider("NLM Search Window (px)", 11, 31, st.session_state.search_window, step=2)
             display_width = adv3.slider("Image Display Width (px)", 400, 1600, 550, step=50, help="Scale images for your monitor")
 
     with st.spinner("Applying rigorous morphological filters..."):
@@ -400,7 +414,7 @@ if st.session_state.ui_mode == "selecting":
             st.session_state.rejected_cells = set()
             st.rerun()
     else:
-        b3.button(f"Process Somas ({len(st.session_state.soma_points)}) ✓", on_click=accept_all, args=(step_size_w, um_per_px_w), type="primary")
+        b3.button(f"Process Somas ({len(st.session_state.soma_points)}) ✓", on_click=accept_all, args=(step_size_w, um_per_px_w, h_val, tmpl_win, search_win), type="primary")
 
 # ─────────────────────────────────────────────────────────────
 # STEP 3 — QC DASHBOARD
@@ -416,7 +430,10 @@ elif st.session_state.ui_mode == "qc":
         st.rerun()
 
     with st.spinner("Running pipeline..."):
-        processed_image, binary, skeleton = run_scientific_skeletonization(img_gray, 11)
+        processed_image, binary, skeleton = run_scientific_skeletonization(
+            img_gray, st.session_state.h_val,
+            st.session_state.template_window, st.session_state.search_window
+        )
 
     farthest_endpoints = measure_farthest_neurite(skeleton, st.session_state.soma_points)
 
@@ -499,13 +516,25 @@ elif st.session_state.ui_mode == "qc":
             st.session_state.rejected_cells.discard(idx)
             for r, inters in zip(radii, intersections):
                 local_sholl_data.append({
-                    "Radius (px)": r, "Intersections": inters, "Cell": f"{current_item['filename']}_C{idx}",
-                    "Group": current_item['group'], "Image": current_item['filename']
+                    "Radius (px)": r, "Intersections": inters,
+                    "Cell": f"{current_item['queue_id']}_C{idx}",
+                    "Group": current_item['group'], "Image": current_item['filename'],
+                    "Radius (µm)": r * conv_factor,
+                    "Pixel size (µm/px)": conv_factor,
+                    "NLM h": st.session_state.h_val,
+                    "NLM template window": st.session_state.template_window,
+                    "NLM search window": st.session_state.search_window,
+                    "Sholl step (px)": step_size,
                 })
             local_summary_rows.append({
-                "Cell": f"{current_item['filename']}_C{idx}",
+                "Cell": f"{current_item['queue_id']}_C{idx}",
                 "Group": current_item['group'],
                 "Image": current_item['filename'],
+                "Pixel size (µm/px)": conv_factor,
+                "NLM h": st.session_state.h_val,
+                "NLM template window": st.session_state.template_window,
+                "NLM search window": st.session_state.search_window,
+                "Sholl step (px)": step_size,
                 "Fractal Dim": round(fd, 4) if not np.isnan(fd) else float("nan"),
                 "Lacunarity":  round(lac, 4) if not np.isnan(lac) else float("nan"),
                 "Ramification":round(sri, 4) if not np.isnan(sri) else float("nan"),
@@ -547,8 +576,6 @@ elif st.session_state.ui_mode == "export":
 
     df_sholl = pd.DataFrame(st.session_state.master_sholl_data)
     df_metrics = pd.DataFrame(st.session_state.master_metrics)
-    conv_factor = st.session_state.um_per_px
-    df_sholl["Radius (µm)"] = df_sholl["Radius (px)"] * conv_factor
 
     st.markdown("#### 📊 Comparative Sholl Curve")
     pcol1, pcol2 = st.columns([1, 3])
@@ -567,7 +594,7 @@ elif st.session_state.ui_mode == "export":
     else:
         sns.lineplot(data=df_sholl, x="Radius (µm)", y="Intersections", hue="Group_n", linewidth=2.5, errorbar="se", palette=palette_opt, ax=ax_glob)
 
-    ax_glob.set_xlabel(f"Distance from Soma (µm)  [1 px = {conv_factor} µm]", fontweight="bold")
+    ax_glob.set_xlabel("Distance from Soma (µm)", fontweight="bold")
     ax_glob.set_ylabel("Number of Intersections",  fontweight="bold")
     ax_glob.set_title("Grouped Sholl Profiles", fontweight="bold")
     ax_glob.legend(title="Group", frameon=False)

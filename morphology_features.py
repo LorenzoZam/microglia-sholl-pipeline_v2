@@ -77,8 +77,8 @@ def box_counting_fractal_dimension(binary_mask):
     --------------------
     Box-counting is the standard algorithm implemented in FracLac (Karperien,
     2013).  Fractal dimension captures the space-filling complexity of the
-    microglial arbor:  ramified microglia have higher D (~1.4–1.5) compared to
-    amoeboid forms (~1.1–1.2).
+    microglial arbor. Interpretation depends on segmentation, scale range, and
+    acquisition conditions; this function does not classify cellular state.
     """
     result = box_counting_fractal_dimension_with_data(binary_mask)
     return result[0]
@@ -167,8 +167,8 @@ def box_counting_lacunarity(binary_mask, box_sizes=None):
     Scientific Rationale
     --------------------
     Lacunarity measures spatial heterogeneity of the structure.  Low lam
-    indicates a homogeneous, space-filling pattern (ramified microglia);
-    high lam indicates clustering or gaps (reactive/amoeboid microglia).
+    indicates a more homogeneous, space-filling pattern at the evaluated scales;
+    high lam indicates clustering or gaps. It is not a functional-state classifier.
     """
     mask = np.asarray(binary_mask, dtype=np.float32)
     if mask.max() > 1:
@@ -329,10 +329,8 @@ def compute_graph_centralities(G):
 
     Scientific Rationale
     --------------------
-    Betweenness centrality identifies critical branch points whose removal
-    would disconnect large portions of the arbor.
-    Closeness centrality reflects how quickly signals could spread from any
-    point to the rest.
+    These are descriptive graph-topology summaries. They must not be interpreted
+    as measurements of biological signaling without independent validation.
     """
     if G.number_of_nodes() < 2:
         return (np.nan, np.nan)
@@ -373,10 +371,9 @@ def schoenen_ramification_index(intersections, radii, soma_point,
     Scientific Rationale
     --------------------
     Nm (maximum intersections) reflects peak branching complexity.
-    Np (number of primary branches) is the count of skeleton pixels directly
-    adjacent to the soma, approximating the first-order processes.
-    SRI normalises complexity by the number of primary branches, enabling
-    cross-cell comparison (Schoenen, 1982).
+    Np is approximated by the sampled crossings at the first Sholl radius. The
+    first radius therefore needs to lie just outside the segmented soma. This is
+    reported as a sampled ramification index, not a direct primary-branch count.
     """
     intersections = np.asarray(intersections)
     radii = np.asarray(radii)
@@ -385,37 +382,7 @@ def schoenen_ramification_index(intersections, radii, soma_point,
 
     Nm = float(intersections.max())
 
-    # Count primary branches: skeleton pixels in 8-neighbourhood of soma
-    skel = np.asarray(skeleton_mask, dtype=bool)
-    sx, sy = int(soma_point[0]), int(soma_point[1])
-    h, w = skel.shape
-
-    Np = 0
-    for dr in range(-1, 2):
-        for dc in range(-1, 2):
-            if dr == 0 and dc == 0:
-                continue
-            r, c = sy + dr, sx + dc
-            if 0 <= r < h and 0 <= c < w and skel[r, c]:
-                Np += 1
-
-    if Np == 0:
-        # --- FIX: expand fallback search up to a radius outside the soma ---
-        ys, xs = np.where(skel)
-        if len(xs) > 0:
-            dists = np.sqrt((xs - sx) ** 2 + (ys - sy) ** 2)
-            
-            # Since soma might be hollowed/large, use ~1.5x the first Sholl radius to find branches
-            search_r = float(radii[0] * 1.5) if len(radii) > 0 else 12.0
-            search_r_inner = float(radii[0] * 0.5) if len(radii) > 0 else 4.0
-            
-            Np = int(np.sum((dists > search_r_inner) & (dists <= search_r)))
-
-    if Np == 0:
-        # Last resort: use the first non-zero Sholl intersection count
-        non_zero = intersections[intersections > 0]
-        if len(non_zero) > 0:
-            Np = int(non_zero[0])
+    Np = int(intersections[0]) if len(intersections) else 0
 
     return float(Nm / Np) if Np > 0 else np.nan
 
@@ -451,9 +418,8 @@ def soma_shape_metrics(binary_image, soma_point, search_radius=30):
 
     Scientific Rationale
     --------------------
-    Soma area increases and circularity approaches 1.0 during microglial
-    activation (ramified -> amoeboid transition), making these two simple
-    scalar descriptors powerful classifiers of activation state.
+    Soma area and circularity are descriptive shape measurements. Their relation
+    to cellular state is context-dependent and is not classified here.
     """
     binary = np.asarray(binary_image, dtype=np.uint8)
     if binary.max() <= 1:
