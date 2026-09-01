@@ -17,7 +17,7 @@
 4. [Pipeline Overview](#pipeline-overview)
 5. [Feature Deep-Dives](#feature-deep-dives)
    - [Patch-wise Adaptive Preprocessing](#a-patch-wise-adaptive-preprocessing)
-   - [Automated Denoising with Interactive Validation](#b-automated-denoising-with-interactive-validation)
+   - [Automated Denoising with Interactive Review](#b-automated-denoising-with-interactive-review)
    - [Soma Selection](#c-soma-selection)
    - [Sholl Analysis & Morphometrics](#d-sholl-analysis--morphometrics)
    - [Interactive QC Dashboard](#e-interactive-qc-dashboard)
@@ -43,11 +43,9 @@ imaging, and complementary molecular or functional measurements. Sholl analysis
 counts crossings between concentric circles and a reconstructed cell arbor and
 is one established way to describe spatial complexity.
 
-However, standard implementations (e.g., ImageJ/Fiji plugins) suffer from:
-- **Manual, time-consuming workflows** that bottleneck large studies
-- **Sensitivity to image quality**, causing fragmented skeletons and erroneous counts
-- **No built-in quality control**, leading to undetected analysis errors
-- **No traceability**, making it difficult to reproduce or audit results
+Common practical challenges include manual review time, sensitivity of
+segmentation to image quality, and the need to record parameters and QC
+decisions consistently across images.
 
 **MicroSholl** is a semi-automated Python pipeline intended to make this workflow
 inspectable and easier to repeat. Its outputs require visual QC and experimental
@@ -84,7 +82,10 @@ This release represents a major upgrade over the original pipeline, adding sever
 ### 🎛️ Automated Denoising UI
 The original pipeline required manually selecting an `h` denoising value from a static grid. v2.0 replaces this with:
 - **Wavelet noise estimation** using `skimage.restoration.estimate_sigma` to compute a heuristic starting `h` value
-- **Pre-computed skeleton previews** for a range of ±4 values around that starting value
+- A **dataset-specific starting value** of `int(0.7 × sigma)`, bounded to 2–20;
+  this heuristic was derived from six accepted Iba1 benchmark ROIs and is not
+  a universally validated optimum
+- **Pre-computed skeleton previews** for a range of ±6 values around that starting value
 - The user reviews or adjusts the value with visual feedback before committing
 
 ### 📊 Interactive QC Dashboard
@@ -190,11 +191,11 @@ Global CLAHE can amplify both signal and background in heterogeneous tissue. The
 <table align="center">
   <tr>
     <td align="center" width="50%">
-      <img src="data/M_02_global.png" width="480"><br>
+      <img src="docs/assets/M_02_global.png" width="480"><br>
       <em><strong>Global CLAHE.</strong> Example output from whole-image enhancement.</em>
     </td>
     <td align="center" width="50%">
-      <img src="data/M_02_patchwise.png" width="480"><br>
+      <img src="docs/assets/M_02_patchwise.png" width="480"><br>
       <em><strong>Patch-wise CLAHE.</strong> Example output from local enhancement; performance is dataset-dependent.</em>
     </td>
   </tr>
@@ -202,25 +203,26 @@ Global CLAHE can amplify both signal and background in heterogeneous tissue. The
 
 ---
 
-### (B) Automated Denoising with Interactive Validation
+### (B) Automated Denoising with Interactive Review
 
 
 <p align="center">
-  <img src="data/UIgif.gif" width="1100"><br>
-  <em><strong>Denoising UI.</strong> A heuristic starting <code>h</code> value is derived from wavelet noise estimation, and previews are pre-computed for a ±4 range. The user reviews or adjusts the value before analysis begins.</em>
+  <img src="docs/assets/UIgif.gif" width="1100"><br>
+  <em><strong>Denoising UI.</strong> A dataset-specific heuristic starting <code>h</code> value is derived from wavelet noise estimation, and previews are pre-computed for a ±6 range. The user reviews or adjusts the value before analysis begins.</em>
 </p>
 
 **Methodological note:** Non-local Means denoising strength (`h`) affects whether
 fine processes and noise are retained. The desktop interface uses wavelet noise
-estimation as a starting point; this mapping is heuristic and must be visually
-validated. The Streamlit interface starts from a configurable default.
+estimation and the documented `0.7 × sigma` mapping as a starting point; this
+mapping is heuristic and must be visually reviewed. The desktop and Streamlit
+interfaces use the same starting-value function and allow manual adjustment.
 
 ---
 
 ### (C) Soma Selection
 
 <p align="center">
-  <img src="data/soma_sel_UI.png" width="1100"><br>
+  <img src="docs/assets/soma_sel_UI.png" width="1100"><br>
   <em><strong>Soma selection.</strong> The processed image (left) is displayed alongside the final skeleton (right) as a reference. Users click directly on soma cell bodies to define analysis anchors. Coordinates are snapped to the nearest skeleton point; users must verify that the resulting anchor is appropriate.</em>
 </p>
 
@@ -229,7 +231,7 @@ validated. The Streamlit interface starts from a configurable default.
 ### (D) Sholl Analysis & Morphometrics
 
 <p align="center">
-  <img src="data/sholl_UI.png" width="520"><br>
+  <img src="docs/assets/sholl_UI.png" width="520"><br>
   <em><strong>Sholl circle placement.</strong> Concentric circles are generated around each selected soma, extending to the farthest detected endpoint of the connected component.</em>
 </p>
 
@@ -257,7 +259,7 @@ therefore requires validation against a suitable reference workflow.
 ### (E) Interactive QC Dashboard
 
 <p align="center">
-  <img src="data/Screen_QC1.png" width="1100"><br>
+  <img src="docs/assets/Screen_QC1.png" width="1100"><br>
 </p>
 
 Each cell presents a 6-panel dashboard before its data is committed:
@@ -319,7 +321,7 @@ use `Animal_ID` as the biological replicate and preserve a stable cell identifie
 the optional mixed model includes animal and cell-level random effects.
 
 <p align="center">
-  <img src="data/Sham CB.png" width="800"><br>
+  <img src="docs/assets/Sham_CB.png" width="800"><br>
   <em><strong>Population-level Sholl curves.</strong> Mean ± SEM intersection profiles across all accepted cells in the Sham condition.</em>
 </p>
 
@@ -369,7 +371,10 @@ MASTER_Sholl_Metrics_Batch.csv         ← Aggregated data from all images
 ```text
 microglia-sholl-pipeline_v2/
 │
-├── data/                       # Example input images and demo outputs
+├── docs/assets/                # README figures and interface screenshots
+├── sample_images/              # Four calibrated, single-channel Iba1 examples
+├── validation/nlm_h/           # Dataset-specific denoising calibration record
+├── tools/                      # Dataset preparation and exploratory utilities
 │
 ├── run_sholl_pipeline.py       # ★ Main pipeline:
 │                               #   preprocessing → skeleton → soma selection
@@ -385,6 +390,7 @@ microglia-sholl-pipeline_v2/
 │                               #   population-level curves, SEM, outlier removal
 │
 ├── merge_sholl_results.py      # Utility to merge per-image CSVs
+├── pipeline_config.py          # Shared denoising and example calibration settings
 │
 ├── tests/                      # Unit and regression tests
 ├── app.py                      # Streamlit interface
@@ -437,6 +443,11 @@ A file dialog will open. Select **one or more** image files (`.tif`, `.tiff`, `.
 
 Spatial calibration is not automatically inferred from image metadata.
 Streamlit users must verify and enter the image-specific pixel size in µm/px.
+The four bundled Iba1 examples are pre-filled with their recorded calibration
+of **0.454546 µm/px**; this value must not be assumed for uploaded images.
+The default 4 px Sholl spacing therefore corresponds to approximately
+**1.818 µm** for those examples. Sholl spacing remains pixel-based and is not
+automatically converted to a fixed physical interval.
 The desktop CLI exports Sholl radii in pixels. Statistical post-processing uses
 row-level calibration when it is present and otherwise falls back to
 **0.56 µm/px**; verify this value before interpreting distances in micrometres.
@@ -469,6 +480,22 @@ in a randomized per-session temporary directory and are deleted when that sessio
 is restarted. Cloud storage is ephemeral; download both CSV outputs before ending
 the session. The default upload limit is 200 MB per file. Do not upload sensitive
 human data to a public deployment without an approved data-handling process.
+
+The bundled examples are 8-bit, single-channel Iba1 TIFFs extracted from
+[BioImage Archive S-BIAD1280](https://www.ebi.ac.uk/biostudies/bioimages/studies/S-BIAD1280).
+They are demonstration inputs rather than a validation benchmark; extraction
+details and hashes are recorded in [`sample_images/README.md`](sample_images/README.md).
+
+### Research utilities
+
+Dataset preparation and exploratory comparison scripts are kept separate from
+the production entry points. Run them from the repository root, for example:
+
+```bash
+python -m tools.prepare_iba1_dataset --help
+python -m tools.compare_sholl_steps --help
+python -m tools.calibrate_nlm_h --help
+```
 
 ---
 
@@ -527,8 +554,8 @@ in `requirements-dev.txt`.
 
 Example images are derived from the following publicly available dataset:
 
-**Effects of PCB52 (2,2',5,5'-Tetrachlorobiphenyl) on the Rat Brain After Subacute Nose-Only Inhalation Exposure**  
-BioImage Archive accession: **S-BIAD1280**  
+**Effects of PCB52 (2,2',5,5'-Tetrachlorobiphenyl) on the Rat Brain After Subacute Nose-Only Inhalation Exposure**
+BioImage Archive accession: **S-BIAD1280**
 DOI: **[10.6019/S-BIAD1280](https://doi.org/10.6019/S-BIAD1280)**
 
 The images are used for methodological demonstration. README figures may show

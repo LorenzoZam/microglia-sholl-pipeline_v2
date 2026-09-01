@@ -1,0 +1,23 @@
+{
+  "created_utc": "2026-07-23T22:44:25.576295+00:00",
+  "range_half_width": 6,
+  "baseline_formula": "min(max(int(1.5 * sigma), 2), 20)",
+  "n_reviewed": 17,
+  "n_selected": 16,
+  "n_excluded": 1,
+  "selected_h_counts": {
+    "9": 3,
+    "10": 3,
+    "11": 1,
+    "12": 2,
+    "13": 3,
+    "14": 3,
+    "15": 1
+  },
+  "median_baseline_h": 16.5,
+  "median_selected_h": 12.0,
+  "mean_selected_minus_baseline": -5.5625,
+  "median_selected_minus_baseline": -6.0,
+  "diagnostic_median_selected_h_per_sigma": 0.9341548740212964,
+  "interpretation_warning": "The diagnostic ratio is not a validated replacement formula. Selections require independent review before production changes."
+}

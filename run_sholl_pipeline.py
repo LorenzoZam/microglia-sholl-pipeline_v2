@@ -24,6 +24,12 @@ from morphology_features import (
     generate_qc_dashboard,
 )
 from provenance import build_manifest, write_manifest
+from pipeline_config import (
+    DEFAULT_SHOLL_STEP_PX,
+    NLM_BASELINE_SIGMA_FACTOR,
+    nlm_baseline_from_sigma,
+    nlm_review_range,
+)
 
 # Sholl Analysis Pipeline for Neuronal Morphology from Microscopy Images
 # This script implements an automated Sholl analysis workflow for quantifying dendritic arborization in neuronal or microglial cells from grayscale microscopy images.
@@ -108,7 +114,9 @@ def get_entropy_map(image, radius=5):
     Returns:
     - np.ndarray: Entropy map.
     
-    Scientific Rationale: Entropy-based adaptation ensures robust enhancement in heterogeneous biological images (Haralick et al., 1973).
+    Scientific Rationale: Entropy provides a computational criterion for local
+    adaptation in heterogeneous images (Haralick et al., 1973); performance is
+    dataset-dependent.
     """
     return entropy(image, disk(radius))
 
@@ -192,7 +200,8 @@ def denoise_image(image, global_var):
     """
     Perform user-guided denoising using Non-local Means (NLM).
     
-    Multiple denoising levels (h values) are previewed via skeletonization, allowing user selection of optimal noise reduction.
+    Multiple denoising levels (h values) are previewed via skeletonization,
+    allowing the user to choose a dataset-appropriate noise reduction level.
     
     Parameters:
     - image (np.ndarray): Input image.
@@ -202,7 +211,7 @@ def denoise_image(image, global_var):
     - np.ndarray: Denoised image.
     
     Scientific Rationale: NLM denoising preserves edges in biological images, crucial for accurate skeleton tracing (Buades et al., 2005).
-    User validation ensures denoising aligns with image quality.
+    User review helps assess whether denoising is appropriate for the image.
     """
     # User preview for denoising
     denoised, h_used = preview_denoising(image)
@@ -238,7 +247,9 @@ def binarize_image(image):
     Returns:
     - np.ndarray: Binary image.
     
-    Scientific Rationale: Otsu's method maximizes inter-class variance, optimal for bimodal histological images (Otsu, 1979).
+    Scientific Rationale: Otsu's method maximizes inter-class variance and is
+    commonly used as a starting point for bimodal intensity distributions
+    (Otsu, 1979); suitability remains dataset-dependent.
     """
     _, binary_image = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return binary_image
@@ -544,7 +555,9 @@ def get_connected_component(skeleton, soma_point):
     Returns:
     - tuple: Binary mask of component and corrected soma coordinates.
     
-    Scientific Rationale: Component isolation ensures per-cell Sholl analysis, critical for accurate quantification in dense cultures (Wearne et al., 2005).
+    Scientific Rationale: Component isolation restricts Sholl measurement to
+    the selected connected structure. Its fidelity depends on segmentation and
+    connectivity quality (Wearne et al., 2005).
     """
     labeled_skel, num_labels = label(skeleton, connectivity=2, return_num=True)
     y, x = soma_point
@@ -759,7 +772,7 @@ def main():
     Orchestrates preprocessing, soma selection, intersection calculation, and output generation.
     Includes visualization, per-image CSVs, and a global Master CSV export.
     """
-    step_size = 4
+    step_size = DEFAULT_SHOLL_STEP_PX
     extra_circles = 3
 
     file_paths = select_image_file()
@@ -1115,9 +1128,9 @@ def preview_denoising(image):
     """
     Preview denoising effects using an interactive Matplotlib Slider GUI.
     
-    The optimal 'h' value is mathematically estimated using the median absolute deviation
-    of wavelet coefficients (skimage.restoration.estimate_sigma) to standardize noise reduction.
-    The user can fine-tune this value using a live-updating slider before accepting.
+    A dataset-calibrated starting ``h`` value is derived from the wavelet noise
+    estimate. The user must review and may fine-tune this heuristic using a
+    live-updating slider before accepting it.
     
     Parameters:
     - image (np.ndarray): Input grayscale image.
@@ -1125,19 +1138,21 @@ def preview_denoising(image):
     Returns:
     - tuple: Selected denoised image and h value.
     
-    Scientific Rationale: Hybrid approach combining mathematical standardization (sigma estimation)
-    with expert biological validation (interactive slider) reduces bias while maintaining versatility.
+    Calibration status: the 0.7 multiplier was derived from manual review of
+    six accepted Iba1 benchmark regions from the included example dataset. It
+    is not a universally validated optimum and should be reviewed per dataset.
     """
-    # 1. mathematically estimate the base noise level of the image
+    # 1. Estimate the base noise level of the image.
     sigma_est = estimate_sigma(image, channel_axis=None)
-    # empirical mapping: set to 1.5 to preserve fine microglia dendrites (prevent over-smoothing)
-    optimal_h = min(max(int(sigma_est * 1.5), 2), 20)
-    print(f"Mathematical noise estimation: sigma={sigma_est:.2f} -> baseline h={optimal_h}")
-
-    # 2. Pre-compute the optimal range tightly around estimated sigma for 60-fps performance
-    min_h = max(1, optimal_h - 4)
-    max_h = optimal_h + 4
-    h_range = list(range(min_h, max_h + 1))
+    baseline_h = nlm_baseline_from_sigma(sigma_est)
+    print(
+        f"Noise estimate: sigma={sigma_est:.2f} -> dataset-calibrated "
+        f"starting h={baseline_h} ({NLM_BASELINE_SIGMA_FACTOR:g} × sigma)"
+    )
+    # 2. Pre-compute the manual-review range for a responsive UI.
+    h_range = nlm_review_range(baseline_h)
+    min_h = h_range[0]
+    max_h = h_range[-1]
     
     print(f"Pre-computing skeletons for h values: {h_range} to ensure zero-lag UI...")
     precomputed_skeletons = {}
@@ -1183,7 +1198,7 @@ def preview_denoising(image):
     skel_img_plot = ax_skel.imshow(np.zeros_like(image), cmap='gray', vmin=0, vmax=255)
     
     # Variables to track state
-    current_h = [optimal_h]
+    current_h = [baseline_h]
     
     def update_skeleton(h_val):
         h = max(int(h_val), 1)
@@ -1196,7 +1211,7 @@ def preview_denoising(image):
         fig.canvas.draw_idle()
         return h
 
-    current_h[0] = update_skeleton(optimal_h)
+    current_h[0] = update_skeleton(baseline_h)
 
     # 3. Interactive UI controls
     ax_slider = plt.axes([0.15, 0.1, 0.7, 0.05])
@@ -1205,7 +1220,7 @@ def preview_denoising(image):
         label='Denoising Strength (h)',
         valmin=min_h,
         valmax=max_h,
-        valinit=optimal_h,
+        valinit=baseline_h,
         valstep=1,
         color='steelblue'
     )
@@ -1233,7 +1248,7 @@ def preview_denoising(image):
         pass
     plt.show(block=True)
     
-    print(f"User validated h={current_h[0]}. Proceeding with analysis...")
+    print(f"User selected h={current_h[0]}. Proceeding with analysis...")
     
     # Immediately return the cached Heavy NLM matrix so no further loop computes
     return precomputed_denoised[current_h[0]], current_h[0]
