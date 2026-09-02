@@ -10,6 +10,7 @@ import uuid
 import copy
 from pathlib import Path
 from streamlit_image_coordinates import streamlit_image_coordinates
+from skimage.restoration import estimate_sigma
 
 from run_sholl_pipeline import (
     apply_adaptive_patching, apply_tophat, binarize_image,
@@ -25,6 +26,13 @@ from morphology_features import (
     schoenen_ramification_index, soma_shape_metrics, _circle_coords,
     generate_qc_dashboard
 )
+from pipeline_config import (
+    DEFAULT_SHOLL_STEP_PX,
+    EXAMPLE_PIXEL_SIZE_UM_PER_PX,
+    NLM_BASELINE_SIGMA_FACTOR,
+    UPLOAD_FALLBACK_PIXEL_SIZE_UM_PER_PX,
+    nlm_baseline_from_sigma,
+)
 
 # ─────────────────────────────────────────────────────────────
 # CONFIG CONSTANTS
@@ -32,7 +40,7 @@ from morphology_features import (
 DISPLAY_WIDTH_PX   = 550
 DEFAULT_MAX_RADIUS = 500
 CROP_MARGIN_FACTOR = 1.3
-DEFAULT_UM_PER_PX  = 0.56
+DEFAULT_UM_PER_PX  = UPLOAD_FALLBACK_PIXEL_SIZE_UM_PER_PX
 SOMA_GREEN         = (50, 205, 50)
 
 # Configurable software QC ranges; these are not biological reference intervals.
@@ -74,7 +82,7 @@ st.markdown("""
      padding:1.4rem 2rem;border-radius:12px;margin-bottom:1.2rem;">
   <h1 style="color:#7ee8fa;margin:0;font-size:2.1rem;">🧠 MicroSholl Batch</h1>
   <p style="color:#cfd9df;margin:0.3rem 0 0;font-size:1rem;">
-    High-Throughput Microglia Morphology Analysis &nbsp;·&nbsp; v2.0
+    Interactive Microglia Morphology Workflow &nbsp;·&nbsp; v2.0
   </p>
 </div>
 """, unsafe_allow_html=True)
@@ -90,17 +98,18 @@ BATCH_TEMP_ROOT.mkdir(exist_ok=True)
 # ─────────────────────────────────────────────────────────────
 _defaults = dict(
     workflow_mode="Single Image",
-    experiment_queue=[], 
+    experiment_queue=[],
     current_queue_idx=0,
-    master_sholl_data=[], 
+    master_sholl_data=[],
     master_metrics=[],
     available_groups=["Control", "Treatment"],
     # Per-image state
     soma_points=[], ui_mode="queue_setup",
     last_click1=None, last_click2=None,
     rejected_cells=set(),
-    step_size=4, um_per_px=DEFAULT_UM_PER_PX,
+    step_size=DEFAULT_SHOLL_STEP_PX, um_per_px=DEFAULT_UM_PER_PX,
     h_val=9, template_window=7, search_window=21,
+    parameter_image_id=None,
     confirm_restart=False,
 )
 for k, v in _defaults.items():
@@ -128,6 +137,7 @@ def _do_restart():
     old_session_dir = BATCH_TEMP_ROOT / st.session_state.session_id
     for k, v in _defaults.items():
         st.session_state[k] = copy.deepcopy(v)
+    st.session_state.pop("step_size_widget", None)
     if old_session_dir.exists():
         shutil.rmtree(old_session_dir)
     st.session_state.session_id = uuid.uuid4().hex
@@ -165,9 +175,19 @@ st.markdown(
 # CORE ALGORITHM (cached)
 # ─────────────────────────────────────────────────────────────
 @st.cache_data
-def run_scientific_skeletonization(image, h_val, tmpl_win=7, search_win=21):
+def apply_cached_adaptive_contrast(image):
     global_var      = np.var(image)
-    processed_image = apply_adaptive_patching(image, global_var)
+    return apply_adaptive_patching(image, global_var)
+
+@st.cache_data
+def suggest_nlm_h(image):
+    processed_image = apply_cached_adaptive_contrast(image)
+    sigma_estimate = float(estimate_sigma(processed_image, channel_axis=None))
+    return sigma_estimate, nlm_baseline_from_sigma(sigma_estimate)
+
+@st.cache_data
+def run_scientific_skeletonization(image, h_val, tmpl_win=7, search_win=21):
+    processed_image = apply_cached_adaptive_contrast(image)
     denoised        = cv2.fastNlMeansDenoising(processed_image, None, h=h_val,
                                                templateWindowSize=tmpl_win,
                                                searchWindowSize=search_win)
@@ -199,13 +219,13 @@ if st.session_state.ui_mode == "queue_setup":
     with col_h2:
         st.markdown("<div style='margin-top: 8px'></div>", unsafe_allow_html=True) # visual alignment
         workflow_choice = st.radio(
-            "Workflow Mode", 
-            options=["Single Image (Quick)", "Batch Mode (Experiment Groups)"], 
+            "Workflow Mode",
+            options=["Single Image (Quick)", "Batch Mode (Experiment Groups)"],
             index=0 if st.session_state.get("workflow_mode", "Single Image") == "Single Image" else 1,
             horizontal=True,
             label_visibility="collapsed"
         )
-    
+
     new_mode = "Single Image" if "Single Image" in workflow_choice else "Batch Mode"
     if new_mode != st.session_state.workflow_mode:
         st.session_state.workflow_mode = new_mode
@@ -235,9 +255,9 @@ if st.session_state.ui_mode == "queue_setup":
     with img_col:
         if st.session_state.workflow_mode == "Batch Mode":
             st.markdown("#### Add Images to Queue")
-            
+
         tab_sample, tab_upload = st.tabs(["🖼️ Try a Sample Image", "📤 Upload Your Own"])
-        
+
         with tab_sample:
             samples = _list_samples()
             if not samples:
@@ -245,7 +265,7 @@ if st.session_state.ui_mode == "queue_setup":
             else:
                 if st.session_state.workflow_mode == "Single Image":
                     st.markdown("Select one of the bundled microscopy images to try the pipeline instantly:")
-                
+
                 thumb_cols = st.columns(min(len(samples), 5))
                 for col, name in zip(thumb_cols, samples):
                     path = SAMPLE_DIR / name
@@ -255,8 +275,8 @@ if st.session_state.ui_mode == "queue_setup":
                         h, w = thumb.shape[:2]
                         scale = 150 / max(h, w)
                         thumb_small = cv2.resize(thumb, (int(w * scale), int(h * scale)))
-                        col.image(thumb_small, caption=name, use_container_width=True)
-                        
+                        col.image(thumb_small, caption=name, width="stretch")
+
                         btn_label = "Use" if st.session_state.workflow_mode == "Single Image" else "➕ Add"
                         if col.button(btn_label, key=f"btn_{name}"):
                             st.session_state.experiment_queue.append({
@@ -264,7 +284,9 @@ if st.session_state.ui_mode == "queue_setup":
                                 "type": "sample",
                                 "filename": name,
                                 "path": str(path),
-                                "group": target_group
+                                "group": target_group,
+                                "pixel_size_um_per_px": EXAMPLE_PIXEL_SIZE_UM_PER_PX,
+                                "calibration_source": "S-BIAD1280 TIFF metadata",
                             })
                             if st.session_state.workflow_mode == "Single Image":
                                 st.session_state.ui_mode = "selecting"
@@ -272,9 +294,14 @@ if st.session_state.ui_mode == "queue_setup":
                             else:
                                 st.success(f"Added {name} to {target_group}")
                             st.rerun()
-                
+
         with tab_upload:
             is_multiple = (st.session_state.workflow_mode == "Batch Mode")
+            st.caption(
+                "Upload a single-channel image containing the signal to analyse. "
+                "For multichannel microscopy data, extract and verify the Iba1 "
+                "channel before upload. Pixel calibration is not inferred here."
+            )
             uploaded_files = st.file_uploader("Upload Images", type=["tif", "tiff", "png", "jpg", "jpeg"], accept_multiple_files=is_multiple)
             if uploaded_files:
                 if not is_multiple:
@@ -291,9 +318,11 @@ if st.session_state.ui_mode == "queue_setup":
                         st.session_state.experiment_queue.append({
                             "queue_id": uuid.uuid4().hex,
                             "type": "upload",
-                                "filename": safe_name,
+                            "filename": safe_name,
                             "path": str(path),
-                            "group": target_group
+                            "group": target_group,
+                            "pixel_size_um_per_px": DEFAULT_UM_PER_PX,
+                            "calibration_source": "manual fallback; verify for this image",
                         })
                     if st.session_state.workflow_mode == "Single Image":
                         st.session_state.ui_mode = "selecting"
@@ -301,7 +330,7 @@ if st.session_state.ui_mode == "queue_setup":
                     else:
                         st.success(f"Added {len(uploaded_files)} images to {target_group}")
                     st.rerun()
-                
+
     if st.session_state.workflow_mode == "Batch Mode":
         st.divider()
         st.markdown("#### Current Queue Workload")
@@ -309,7 +338,7 @@ if st.session_state.ui_mode == "queue_setup":
             st.info("Queue is empty. Add images above.")
         else:
             df_queue = pd.DataFrame(st.session_state.experiment_queue)[["filename", "group", "type"]]
-            st.dataframe(df_queue, use_container_width=True)
+            st.dataframe(df_queue, width="stretch")
             rc1, rc2 = st.columns([1, 4])
             if rc1.button("🗑️ Clear Queue"):
                 st.session_state.experiment_queue = []
@@ -328,7 +357,7 @@ if st.session_state.ui_mode in ["selecting", "qc"]:
     if st.session_state.current_queue_idx >= len(st.session_state.experiment_queue):
         st.session_state.ui_mode = "export"
         st.rerun()
-        
+
     current_item = st.session_state.experiment_queue[st.session_state.current_queue_idx]
     current_item.setdefault("queue_id", uuid.uuid4().hex)
     img_color = cv2.imread(current_item["path"], cv2.IMREAD_COLOR)
@@ -337,7 +366,17 @@ if st.session_state.ui_mode in ["selecting", "qc"]:
         st.error(f"Failed to load {current_item['filename']}.")
         st.stop()
     img_color = cv2.cvtColor(img_color, cv2.COLOR_BGR2RGB)
-    
+
+    if st.session_state.parameter_image_id != current_item["queue_id"]:
+        sigma_estimate, suggested_h = suggest_nlm_h(img_gray)
+        st.session_state.h_val = suggested_h
+        st.session_state.um_per_px = float(
+            current_item.get("pixel_size_um_per_px", DEFAULT_UM_PER_PX)
+        )
+        st.session_state.parameter_image_id = current_item["queue_id"]
+        current_item["sigma_estimate"] = sigma_estimate
+        current_item["suggested_h"] = suggested_h
+
     st.markdown(f"### Image {st.session_state.current_queue_idx + 1} of {len(st.session_state.experiment_queue)}")
     st.markdown(f"**Filename:** `{current_item['filename']}` &nbsp;|&nbsp; **Group:** `{current_item['group']}`")
 
@@ -346,7 +385,7 @@ if st.session_state.ui_mode in ["selecting", "qc"]:
 # ─────────────────────────────────────────────────────────────
 if st.session_state.ui_mode == "selecting":
     st.caption("👆 Click on somas in either image. Accumulate multiple cells.")
-    
+
     img_container  = st.container()
     ctrl_container = st.container()
 
@@ -354,17 +393,31 @@ if st.session_state.ui_mode == "selecting":
         st.markdown("---")
         st.markdown("#### 🎛️ Denoising & Analysis Parameters")
         c1, c2, c3 = st.columns(3)
-        h_val       = c1.slider("NLM Parameter (h)", min_value=1, max_value=20, value=st.session_state.h_val)
-        step_size_w = int(c2.number_input("Sholl Step Size (px)", min_value=1, max_value=50, value=st.session_state.step_size))
-        um_per_px_w = float(c3.number_input("Pixel size (µm/px)", min_value=0.01, max_value=10.0, value=st.session_state.um_per_px, step=0.01))
+        h_val = c1.slider("NLM Parameter (h)", min_value=1, max_value=20, key="h_val")
+        step_size_w = int(
+            c2.number_input(
+                "Sholl Step Size (px)",
+                min_value=1,
+                max_value=50,
+                value=int(st.session_state.step_size),
+                key="step_size_widget",
+            )
+        )
+        um_per_px_w = float(c3.number_input("Pixel size (µm/px)", min_value=0.01, max_value=10.0, step=0.001, format="%.6f", key="um_per_px"))
+        st.caption(
+            f"Suggested h={current_item.get('suggested_h', h_val)} "
+            f"({NLM_BASELINE_SIGMA_FACTOR:g} × estimated sigma; dataset-specific heuristic). "
+            f"Calibration: {current_item.get('calibration_source', 'verify manually')}. "
+            f"Current Sholl spacing: {step_size_w * um_per_px_w:.3f} µm."
+        )
 
         with st.expander("⚙️ Advanced Pipeline Settings", expanded=False):
             adv1, adv2, adv3 = st.columns(3)
-            tmpl_win   = adv1.slider("NLM Template Window (px)", 5, 15, st.session_state.template_window, step=2)
-            search_win = adv2.slider("NLM Search Window (px)", 11, 31, st.session_state.search_window, step=2)
+            tmpl_win   = adv1.slider("NLM Template Window (px)", 5, 15, step=2, key="template_window")
+            search_win = adv2.slider("NLM Search Window (px)", 11, 31, step=2, key="search_window")
             display_width = adv3.slider("Image Display Width (px)", 400, 1600, 550, step=50, help="Scale images for your monitor")
 
-    with st.spinner("Applying rigorous morphological filters..."):
+    with st.spinner("Applying configurable morphological filters..."):
         processed_image, binary, skeleton = run_scientific_skeletonization(img_gray, h_val, tmpl_win, search_win)
 
     ov_left  = img_color.copy()
@@ -550,11 +603,11 @@ elif st.session_state.ui_mode == "qc":
     if st.button(btn_lbl, type="primary"):
         st.session_state.master_sholl_data.extend(local_sholl_data)
         st.session_state.master_metrics.extend(local_summary_rows)
-        
+
         st.session_state.current_queue_idx += 1
         st.session_state.soma_points = []
         st.session_state.rejected_cells = set()
-        
+
         if st.session_state.current_queue_idx >= len(st.session_state.experiment_queue):
             st.session_state.ui_mode = "export"
         else:
@@ -566,7 +619,7 @@ elif st.session_state.ui_mode == "qc":
 # ─────────────────────────────────────────────────────────────
 elif st.session_state.ui_mode == "export":
     st.markdown("### Step 4: Batch Global Report")
-    
+
     if st.button("← Back to Setup (Restart)", on_click=_do_restart):
         st.rerun()
 

@@ -5,6 +5,13 @@ __pycache__/
 .coverage
 htmlcov/
 .tmp_batch/
+.tmp_pytest/
 .venv/
 venv/
 *_sholl_output/
+/sample_images/MASTER_Sholl_Metrics_Batch.csv
+local_data/
+nlm_h_calibration/
+nlm_h_second_test/
+clahe_method_comparison/
+/clahe_comparison_*/
