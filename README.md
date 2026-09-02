@@ -440,17 +440,6 @@ Subacute Nose-Only Inhalation Exposure**
 
 These images are demonstration inputs, not an independent validation benchmark.
 
-## Author contribution
-
-Lorenzo Zammariello designed and implemented the MicroSholl workflow, including
-the adaptive patch-wise decision logic, denoising-review workflow, Streamlit
-interface, desktop analysis integration, statistical post-processing, testing,
-documentation, reproducibility infrastructure, and deployment.
-
-This statement does not claim authorship of the established algorithms and
-third-party libraries integrated by the project, or independent external
-validation of the resulting measurements.
-
 ## Core method references
 
 - Sholl, D. A. (1953). Dendritic organization in the neurons of the visual and
