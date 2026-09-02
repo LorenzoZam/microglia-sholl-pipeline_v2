@@ -13,3 +13,5 @@ venv/
 local_data/
 nlm_h_calibration/
 nlm_h_second_test/
+clahe_method_comparison/
+/clahe_comparison_*/
